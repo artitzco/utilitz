@@ -1,3 +1,3 @@
-# Utilitz Package
+# utilitz package
 
-Simple Python utility functions to save and load data
+A small Python utility library for working with text files, JSON, serialized objects, and Excel tables.

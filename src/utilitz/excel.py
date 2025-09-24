@@ -51,12 +51,12 @@ def decode_column(code):
 
 def read_excel_table(io,
                      sheet_name=0,
-                     usecols=None,
-                     header=0,
+                     usecols=None,  # En el futuro detectar rangos de columnas
+                     header=0,  # En el futuro utilizar multiheaders
                      nrows=None,
-                     checkcol=None,
+                     checkcol=None,  # En el futuro puede ser numérica
                      patterncol=None,
-                     findtable=False,
+                     findheaders=False,
                      raw_df=None,
                      **kwargs):
     """
@@ -82,9 +82,9 @@ def read_excel_table(io,
     patterncol : str, optional
         Regular expression. Only rows matching this pattern in `checkcol`
         are included.
-    findtable : bool, default=False
-        Placeholder for future implementation to auto-detect the table
-        start when header is None. Currently not implemented.
+    findheaders : bool, default=False
+        If True, detects multiple tables in the sheet by looking for
+        non-empty cells in `checkcol`. Returns a list of DataFrames.
     raw_df : pandas.DataFrame, optional
         Preloaded DataFrame to avoid re-reading the Excel file.
     **kwargs : dict
@@ -103,13 +103,44 @@ def read_excel_table(io,
     >>> # Read rows in column "B" that start with digits
     >>> df = read_excel_table("data.xlsx", checkcol="B", patterncol=r"^\\d+")
     """
-    if raw_df is None:
-        raw_df = pd.read_excel(io, sheet_name=sheet_name, dtype=str)
+    if raw_df is not None:
+        raise ValueError('"raw_df" is not implemented yet')
+
     if nrows is None:
         max_nrows = float('inf')
 
-    if header is None and findtable:
-        raise NotImplemented()
+    if findheaders:
+        raw_df = pd.read_excel(io,
+                               header=None,
+                               sheet_name=sheet_name,
+                               dtype=str)
+        # En el futuro se puede utilizar la primera columna de usecols
+        checkcol = 'A' if checkcol is None else checkcol
+        column = raw_df[raw_df.columns[decode_column(
+            checkcol)]].reset_index(drop=True)
+        condition = ~column.isna()
+        if patterncol:
+            condition &= column.apply(lambda x:
+                                      bool(re.match(patterncol, x))
+                                      if isinstance(x, str) else False)
+
+        headers = (column[condition.astype(int).diff() == 1].index-1).tolist()
+        if condition.iloc[0]:
+            headers = [None] + headers
+
+        return [read_excel_table(io,
+                                 sheet_name=sheet_name,
+                                 usecols=usecols,
+                                 header=header,
+                                 nrows=nrows,
+                                 checkcol=checkcol,
+                                 patterncol=patterncol,
+                                 findheaders=False,
+                                 raw_df=None,
+                                 **kwargs) for header in headers]
+    raw_df = pd.read_excel(io,
+                           sheet_name=sheet_name,
+                           dtype=str)
 
     if checkcol is not None:
         nrows = 0

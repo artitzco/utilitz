@@ -1,4 +1,7 @@
 .gitignore
+__upload__.cmd
+data/
+notebooks/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

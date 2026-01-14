@@ -1,8 +1,10 @@
 from pathlib import Path
 import os
 
+import sys
 
-def locate_project(level=None, forced=False):
+
+def locate_project(level=None, forced=False, source=None):
     """
     Change the current working directory to a project root based on a search pattern or parent level.
 
@@ -19,7 +21,7 @@ def locate_project(level=None, forced=False):
         - Raises FileNotFoundError if the search fails.
     """
     global_vars = globals()
-    varname = '__locate__project__'
+    varname = 'utilitz__locate__project__'
     cwd = Path.cwd()
     if varname in global_vars:
         if level is None or forced:
@@ -28,6 +30,7 @@ def locate_project(level=None, forced=False):
             del global_vars[varname]
             print(f'[INFO] Working directory restored: {cwd}')
         if not forced:
+            set_soruce(source)
             return
 
     if level is not None:
@@ -52,3 +55,32 @@ def locate_project(level=None, forced=False):
                 raise FileNotFoundError(
                     f"Could not find a directory matching level '{level}' from {cwd}"
                 )
+    set_soruce(source)
+
+
+def set_soruce(source):
+    if source is None:
+        source = []
+    if isinstance(source, str):
+        source = [source]
+
+    varname = 'utilitz__set_source__'
+    path_list = globals().get(varname, [])
+    new_path_list = [str(Path().resolve() / x) for x in source]
+
+    # agregar nuevos paths
+    for x in new_path_list:
+        if x not in path_list:
+            sys.path.append(x)
+            print(f"[INFO] Path added to sys.path: {x}")
+
+    # quitar paths que ya no están
+    for x in path_list:
+        if x not in new_path_list:
+            if x in sys.path:
+                sys.path.remove(x)
+                print(f"[INFO] Path removed from sys.path: {x}")
+
+    # actualizar globals si hubo cambios
+    if new_path_list != path_list:
+        globals()[varname] = new_path_list

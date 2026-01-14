@@ -30,7 +30,7 @@ def locate_project(level=None, forced=False, source=None):
             del global_vars[varname]
             print(f'[INFO] Working directory restored: {cwd}')
         if not forced:
-            set_soruce(source)
+            set_source(source)
             return
 
     if level is not None:
@@ -55,10 +55,10 @@ def locate_project(level=None, forced=False, source=None):
                 raise FileNotFoundError(
                     f"Could not find a directory matching level '{level}' from {cwd}"
                 )
-    set_soruce(source)
+    set_source(source)
 
 
-def set_soruce(source):
+def set_source(source):
     if source is None:
         source = []
     if isinstance(source, str):

@@ -2,6 +2,7 @@ from . import excel
 from . import path
 from . import sys
 from . import io
+from . import crypto
 import pickle
 import json
 

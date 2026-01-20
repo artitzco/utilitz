@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "utilitz"
-version = "0.5.1"
+version = "0.6.1"
 authors = [
   { name = "Artitzco", email = "artitzco@proton.me" },
 ]
@@ -21,7 +21,8 @@ dependencies = [
     "pyarrow",
     "openpyxl",
     "pyautogui",
-    "pynput"
+    "pynput",
+    "cryptography"
 ]
 [project.urls]
 Homepage = "https://github.com/artitzco/utilitz"

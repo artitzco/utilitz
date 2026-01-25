@@ -70,7 +70,7 @@ def decode(regex, text, split=False, kind=None):
     decoded semantic values.
     """
     regex_list = regex if isinstance(regex, list) else [regex]
-    regex_list = [patt.regex
+    regex_list = [str(patt)
                   if isinstance(patt, Pattern) else patt for patt in regex_list]
     result = [{name: []
                for name in find_patterns(regex, names=True)}
@@ -151,8 +151,8 @@ class Pattern:
             raise ValueError(
                 "Cannot decode a match from a non-visible Pattern instance.")
         if to_dict:
-            return {self.name: match.group()}
-        return match.group()
+            return {self.name: match.group(self.id)}
+        return match.group(self.id)
 
     def __str__(self):
         return self.new_group(self.regex)
@@ -323,3 +323,87 @@ class First(Pattern):
 
     def __repr__(self):
         return f"First({self.__str__()})"
+
+
+class Currency(Number):
+
+    """
+    Specialized Number pattern for currency values.
+
+    Presets common currency defaults such as separators and symbol.
+    """
+
+    def __init__(self, name=None, integer_sep=',', decimal_sep='.', currency_sym='$'):
+        super().__init__(name, integer_sep, decimal_sep, currency_sym, signum=True)
+
+
+class Date(Pattern):
+    """
+    Pattern that matches and decodes dates using pandas-like formats.
+
+    Supported tokens:
+    %Y  year (4 digits)
+    %m  month number
+    %d  day
+    %b  abbreviated month name (en/es, case-insensitive)
+    %B  full month name (en/es, case-insensitive)
+    """
+
+    DEFAULT_MONTHS = {
+        1:  ['jan', 'january', 'ene', 'enero'],
+        2:  ['feb', 'february', 'febrero'],
+        3:  ['mar', 'march', 'marzo'],
+        4:  ['apr', 'april', 'abr', 'abril'],
+        5:  ['may', 'mayo'],
+        6:  ['jun', 'june', 'junio'],
+        7:  ['jul', 'july', 'julio'],
+        8:  ['aug', 'august', 'ago', 'agosto'],
+        9:  ['sep', 'sept', 'september', 'septiembre'],
+        10: ['oct', 'october', 'octubre'],
+        11: ['nov', 'november', 'noviembre'],
+        12: ['dec', 'december', 'dic', 'diciembre'],
+    }
+
+    def __init__(self, name=None, format='%Y-%m-%d', month_names=None):
+        super().__init__(regex=None, name=name)
+        self.format = format
+
+        # if None → use all known abbreviations
+        months = month_names or self.DEFAULT_MONTHS
+
+        self._month_map = {}
+        for num, names in months.items():
+            for n in names:
+                self._month_map[n.lower()] = num
+
+        self._month_regex = '(?i:' + '|'.join(
+            re.escape(m) for m in self._month_map
+        ) + ')'
+
+    @property
+    def regex(self):
+        regex = self.format
+        regex = regex.replace('%Y', self.new_group(r'\d{4}', 'year'))
+        regex = regex.replace('%m', self.new_group(r'\d{1,2}', 'month'))
+        regex = regex.replace('%d', self.new_group(r'\d{1,2}', 'day'))
+        regex = regex.replace('%b', self.new_group(self._month_regex, 'month'))
+        regex = regex.replace('%B', self.new_group(self._month_regex, 'month'))
+        return regex
+
+    def decode(self, match, to_dict=False):
+        year = int(match.group(self.get_id('year')))
+        day = int(match.group(self.get_id('day')))
+        month_raw = match.group(self.get_id('month'))
+        if month_raw.isdigit():
+            month = int(month_raw)
+        else:
+            month = self._month_map[month_raw.lower()]
+
+        value = {'year': year, 'month': month, 'day': day}
+
+        if to_dict:
+            return {self.name: value}
+        return tuple(value.values())
+
+    def __repr__(self):
+        return f"Date({self.__str__()})"

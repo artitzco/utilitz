@@ -3,6 +3,8 @@ from . import path
 from . import sys
 from . import io
 from . import crypto
+from . import regex
+
 import pickle
 import json
 

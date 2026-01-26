@@ -399,11 +399,9 @@ class Date(Pattern):
         else:
             month = self._month_map[month_raw.lower()]
 
-        value = {'year': year, 'month': month, 'day': day}
-
         if to_dict:
-            return {self.name: value}
-        return tuple(value.values())
+            return {self.name: f'{year:02d}-{month:02d}-{day:02d}'}
+        return f'{year:02d}-{month:02d}-{day:02d}'
 
     def __repr__(self):
         return f"Date({self.__str__()})"

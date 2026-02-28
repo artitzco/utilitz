@@ -42,7 +42,7 @@ def load_text(file_path):
         List of lines from the file without newline characters.
     """
     with open(file_path, 'r', encoding='utf-8') as file_obj:
-        text_list = [line.strip() for line in file_obj]
+        text_list = [line.rstrip('\n') for line in file_obj]
     return text_list
 
 

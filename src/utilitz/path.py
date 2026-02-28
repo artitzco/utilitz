@@ -1,7 +1,7 @@
 from pathlib import Path
 import os
 
-import sys
+import sys as _sys
 
 
 def locate_project(level=None, forced=False, source=None):
@@ -71,14 +71,14 @@ def set_source(source):
     # agregar nuevos paths
     for x in new_path_list:
         if x not in path_list:
-            sys.path.append(x)
+            _sys.path.append(x)
             print(f"[INFO] Path added to sys.path: {x}")
 
     # quitar paths que ya no están
     for x in path_list:
         if x not in new_path_list:
-            if x in sys.path:
-                sys.path.remove(x)
+            if x in _sys.path:
+                _sys.path.remove(x)
                 print(f"[INFO] Path removed from sys.path: {x}")
 
     # actualizar globals si hubo cambios

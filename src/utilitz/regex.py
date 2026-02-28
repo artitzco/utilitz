@@ -183,16 +183,24 @@ class Integer(Pattern):
                  name=None,
                  integer_sep=None,
                  currency_sym=None,
-                 signum=True):
+                 signum=True,
+                 signum_space=False):
         super().__init__(regex=None,
                          name=name)
         self.separator = integer_sep and re.escape(integer_sep)
         self.currency_symbol = currency_sym and re.escape(currency_sym)
         self.signum = signum
+        self.signum_space = signum_space
 
     @property
     def regex(self):
-        signum_regex = r'(?:-\s*|\+\s*)?' if self.signum else r''
+        if not self.signum:
+            signum_regex = r''
+        else:
+            if self.signum_space:
+                signum_regex = r'(?:-\s*|\+\s*)?'
+            else:
+                signum_regex = r'(?:-|\+)?'
         currency_regex = self.currency_symbol + r'\s*' if self.currency_symbol else r''
         prefix = self.new_group(rf'(?:{signum_regex}{currency_regex}|{currency_regex}{signum_regex})',
                                 'prefix')
@@ -235,11 +243,13 @@ class Number(Integer):
                  integer_sep=None,
                  decimal_sep='.',
                  currency_sym=None,
-                 signum=True):
+                 signum=True,
+                 signum_space=False):
         super().__init__(name=name,
                          integer_sep=integer_sep,
                          currency_sym=currency_sym,
-                         signum=signum)
+                         signum=signum,
+                         signum_space=signum_space)
         self.decimal_sep = re.escape(decimal_sep)
 
     @property
@@ -282,6 +292,9 @@ class First(Pattern):
                          hidden=False,
                          visible=True
                          )
+
+        regexes = [str(rx) if isinstance(rx, Pattern)
+                   else rx for rx in regexes]
         self.name = list(dict.fromkeys([elem
                                         for sublist in [find_patterns(rx, names=True)
                                                         for rx in regexes] for elem in sublist]))
@@ -300,6 +313,8 @@ class First(Pattern):
         for i, pattern_list in enumerate(self.patterns):
             if match.group(self.get_id(i)):
                 break
+        else:
+            raise ValueError("No alternative matched in First pattern")
 
         if not to_dict:
             result = []
@@ -333,8 +348,9 @@ class Currency(Number):
     Presets common currency defaults such as separators and symbol.
     """
 
-    def __init__(self, name=None, integer_sep=',', decimal_sep='.', currency_sym='$'):
-        super().__init__(name, integer_sep, decimal_sep, currency_sym, signum=True)
+    def __init__(self, name=None, integer_sep=',', decimal_sep='.', currency_sym='$', signum_space=False):
+        super().__init__(name, integer_sep, decimal_sep,
+                         currency_sym, signum=True, signum_space=signum_space)
 
 
 class Date(Pattern):
@@ -349,36 +365,55 @@ class Date(Pattern):
     %B  full month name (en/es, case-insensitive)
     """
 
-    DEFAULT_MONTHS = {
-        1:  ['jan', 'january', 'ene', 'enero'],
-        2:  ['feb', 'february', 'febrero'],
-        3:  ['mar', 'march', 'marzo'],
-        4:  ['apr', 'april', 'abr', 'abril'],
-        5:  ['may', 'mayo'],
-        6:  ['jun', 'june', 'junio'],
-        7:  ['jul', 'july', 'julio'],
-        8:  ['aug', 'august', 'ago', 'agosto'],
-        9:  ['sep', 'sept', 'september', 'septiembre'],
-        10: ['oct', 'october', 'octubre'],
-        11: ['nov', 'november', 'noviembre'],
-        12: ['dec', 'december', 'dic', 'diciembre'],
+    DEFAULT_MONTH_ABBR = {
+        1:  ['jan', 'ene'],
+        2:  ['feb'],
+        3:  ['mar'],
+        4:  ['apr', 'abr'],
+        5:  ['may'],
+        6:  ['jun'],
+        7:  ['jul'],
+        8:  ['aug', 'ago'],
+        9:  ['sep', 'sept'],
+        10: ['oct'],
+        11: ['nov'],
+        12: ['dec', 'dic'],
     }
 
-    def __init__(self, name=None, format='%Y-%m-%d', month_names=None):
+    DEFAULT_MONTH_FULL = {
+        1:  ['january', 'enero'],
+        2:  ['february', 'febrero'],
+        3:  ['march', 'marzo'],
+        4:  ['april', 'abril'],
+        5:  ['may', 'mayo'],
+        6:  ['june', 'junio'],
+        7:  ['july', 'julio'],
+        8:  ['august', 'agosto'],
+        9:  ['september', 'septiembre'],
+        10: ['october', 'octubre'],
+        11: ['november', 'noviembre'],
+        12: ['december', 'diciembre'],
+    }
+
+    def __init__(self, name=None, format='%Y-%m-%d'):
         super().__init__(regex=None, name=name)
         self.format = format
 
-        # if None → use all known abbreviations
-        months = month_names or self.DEFAULT_MONTHS
-
         self._month_map = {}
-        for num, names in months.items():
-            for n in names:
-                self._month_map[n.lower()] = num
+        for source in (self.DEFAULT_MONTH_ABBR, self.DEFAULT_MONTH_FULL):
+            for num, names in source.items():
+                for n in names:
+                    self._month_map[n.lower()] = num
 
-        self._month_regex = '(?i:' + '|'.join(
-            re.escape(m) for m in self._month_map
-        ) + ')'
+        def build_regex(months):
+            return '(?i:' + '|'.join(
+                re.escape(n)
+                for names in months.values()
+                for n in names
+            ) + ')'
+
+        self._abbr_month_regex = build_regex(self.DEFAULT_MONTH_ABBR)
+        self._full_month_regex = build_regex(self.DEFAULT_MONTH_FULL)
 
     @property
     def regex(self):
@@ -386,22 +421,22 @@ class Date(Pattern):
         regex = regex.replace('%Y', self.new_group(r'\d{4}', 'year'))
         regex = regex.replace('%m', self.new_group(r'\d{1,2}', 'month'))
         regex = regex.replace('%d', self.new_group(r'\d{1,2}', 'day'))
-        regex = regex.replace('%b', self.new_group(self._month_regex, 'month'))
-        regex = regex.replace('%B', self.new_group(self._month_regex, 'month'))
+        regex = regex.replace('%b', self.new_group(
+            self._abbr_month_regex, 'month'))
+        regex = regex.replace('%B', self.new_group(
+            self._full_month_regex, 'month'))
         return regex
 
     def decode(self, match, to_dict=False):
         year = int(match.group(self.get_id('year')))
         day = int(match.group(self.get_id('day')))
         month_raw = match.group(self.get_id('month'))
-        if month_raw.isdigit():
-            month = int(month_raw)
-        else:
-            month = self._month_map[month_raw.lower()]
 
-        if to_dict:
-            return {self.name: f'{year:02d}-{month:02d}-{day:02d}'}
-        return f'{year:02d}-{month:02d}-{day:02d}'
+        month = int(month_raw) if month_raw.isdigit() \
+            else self._month_map[month_raw.lower()]
+
+        value = f'{year:04d}-{month:02d}-{day:02d}'
+        return {self.name: value} if to_dict else value
 
     def __repr__(self):
         return f"Date({self.__str__()})"

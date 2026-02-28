@@ -2,6 +2,8 @@
 __upload__.cmd
 data/
 notebooks/
+.agents/
+tests/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

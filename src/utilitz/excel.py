@@ -106,8 +106,7 @@ def read_excel_table(io,
     if raw_df is not None:
         raise ValueError('"raw_df" is not implemented yet')
 
-    if nrows is None:
-        max_nrows = float('inf')
+    max_nrows = nrows if nrows is not None else float('inf')
 
     if findheaders:
         raw_df = pd.read_excel(io,
@@ -148,7 +147,7 @@ def read_excel_table(io,
 
         for x in check_column:
             if not pd.isna(x) and nrows < max_nrows:
-                if patterncol and re.match(patterncol, x) or not patterncol:
+                if not patterncol or re.match(patterncol, x):
                     nrows += 1
             else:
                 break

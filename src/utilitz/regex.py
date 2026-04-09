@@ -216,11 +216,14 @@ class Integer(Pattern):
         if not self.visible:
             raise ValueError(
                 "Cannot decode a match from a non-visible Pattern instance.")
-        prefix_match = match.group(self.get_id('prefix'))
+        integer_match = match.group(self.get_id('integer'))
+        if integer_match is None:
+            return {self.name: None} if to_dict else None
+            
+        prefix_match = match.group(self.get_id('prefix')) or ''
         currency_symbol = self.currency_symbol or ''
         signum_symbol = re.sub(currency_symbol, '', prefix_match).strip()
         signum = 1 - 2 * bool(prefix_match and signum_symbol == '-')
-        integer_match = match.group(self.get_id('integer'))
         separator = self.separator or ''
         integer = int(re.sub(separator, '', integer_match))
         if to_dict:
@@ -261,6 +264,9 @@ class Number(Integer):
 
     def decode(self, match, to_dict=False):
         integer = super().decode(match)
+        if integer is None:
+            return {self.name: None} if to_dict else None
+            
         signum = -1 if integer < 0 else 1
         integer = abs(integer)
         decimal_match = match.group(self.get_id('decimal'))

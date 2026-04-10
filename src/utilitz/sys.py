@@ -46,6 +46,9 @@ def monitor_keep_alive(seconds, key='ctrl', verbose=1, tolerance=0.1):
     def time_format(ts):
         return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
+    original_failsafe = pyautogui.FAILSAFE
+    pyautogui.FAILSAFE = False
+
     monitor = MonitorActivity()
     monitor.start()
     status = '==START=='
@@ -69,7 +72,10 @@ def monitor_keep_alive(seconds, key='ctrl', verbose=1, tolerance=0.1):
                 last_status = status
                 status = '==INACTIVE=='
                 sleep_time = max(tolerance, seconds - tolerance)
-                pyautogui.press(key)
+                try:
+                    pyautogui.press(key)
+                except pyautogui.FailSafeException:
+                    pass
             if verbose == 1 and status != last_status:
                 print(time_format(time.time()), status)
             elif verbose == 2:
@@ -77,4 +83,5 @@ def monitor_keep_alive(seconds, key='ctrl', verbose=1, tolerance=0.1):
                       '\n\tinactive_time:',  f'{inactive_time:.03f}', 'sleep_time:', f'{sleep_time:.03f}')
             time.sleep(sleep_time)
     finally:
+        pyautogui.FAILSAFE = original_failsafe
         monitor.stop()

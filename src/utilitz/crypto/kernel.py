@@ -1,4 +1,5 @@
 import base64
+import binascii
 import hashlib
 import io
 import json
@@ -9,9 +10,13 @@ from .security import SecurityProfile
 
 DEFAULT_OUTPUT_PREFIX = "-confidential-"
 DEFAULT_ENCRYPTED_EXTENSION = ".asc"
+DEFAULT_COMPATIBLE_EXTENSION = ".txt"
 
-TOKEN_MAGIC = b"ITZ-TOKEN-V2"
+TOKEN_MAGIC = b"ITZ-TOKEN-V1"
 FILE_MAGIC = b"ITZ-FILE-V1"
+COMPAT_TOKEN_BEGIN = "-----BEGIN ITZ ENCRYPTED TOKEN-----"
+COMPAT_TOKEN_END = "-----END ITZ ENCRYPTED TOKEN-----"
+COMPAT_LINE_WIDTH = 76
 
 try:
     from cryptography.fernet import Fernet
@@ -137,6 +142,54 @@ def build_hashed_output_name(
 ) -> str:
     digest = hashlib.sha256(file_bytes).hexdigest()[:24]
     return f"{prefix}{digest}{ext}"
+
+
+def build_compatible_extension() -> str:
+    return DEFAULT_ENCRYPTED_EXTENSION + DEFAULT_COMPATIBLE_EXTENSION
+
+
+def format_compatible_token(token: bytes) -> str:
+    token_b64 = base64.b64encode(token).decode("ascii")
+    lines = [
+        token_b64[i:i + COMPAT_LINE_WIDTH]
+        for i in range(0, len(token_b64), COMPAT_LINE_WIDTH)
+    ]
+    return "\n".join([COMPAT_TOKEN_BEGIN, *lines, COMPAT_TOKEN_END, ""])
+
+
+def parse_compatible_token(raw_bytes: bytes) -> bytes | None:
+    if raw_bytes.startswith(TOKEN_MAGIC + b":"):
+        return raw_bytes
+
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+    stripped = text.strip()
+    if not stripped:
+        return None
+
+    if stripped.startswith(COMPAT_TOKEN_BEGIN):
+        if COMPAT_TOKEN_END not in stripped:
+            return None
+        body = stripped[len(COMPAT_TOKEN_BEGIN):]
+        body = body.split(COMPAT_TOKEN_END, 1)[0]
+        encoded = "".join(body.split())
+    else:
+        encoded = "".join(stripped.split())
+
+    if not encoded:
+        return None
+
+    try:
+        token = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+
+    if not token.startswith(TOKEN_MAGIC + b":"):
+        return None
+    return token
 
 
 def pack_directory_to_zip_bytes(directory_path: str) -> bytes:

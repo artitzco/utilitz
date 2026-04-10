@@ -3,12 +3,16 @@ import os
 import shutil
 
 from .kernel import (
+    build_compatible_extension,
     build_hashed_output_name,
     check_crypto,
+    DEFAULT_ENCRYPTED_EXTENSION,
     FILE_MAGIC,
     decrypt_payload,
     encrypt_payload,
+    format_compatible_token,
     pack_directory_to_zip_bytes,
+    parse_compatible_token,
     require_security_profile,
     safe_extract_zip,
     unpack_file_payload,
@@ -32,6 +36,7 @@ def encrypt_file(
     password: str,
     output_path: str = None,
     security: SecurityProfile = SECURITY_STANDARD,
+    compatible: bool = False,
 ) -> str:
     """
     Encrypt a file using a password.
@@ -50,7 +55,8 @@ def encrypt_file(
 
     if output_path is None:
         source_dir = os.path.dirname(source_path)
-        base_name = build_hashed_output_name(file_bytes=file_bytes)
+        ext = build_compatible_extension() if compatible else DEFAULT_ENCRYPTED_EXTENSION
+        base_name = build_hashed_output_name(file_bytes=file_bytes, ext=ext)
         output_path = os.path.join(source_dir, base_name)
 
     output_path = os.path.abspath(os.path.expanduser(output_path))
@@ -64,8 +70,12 @@ def encrypt_file(
     security = require_security_profile(security)
     token = encrypt_payload(payload, password, security=security)
 
-    with open(output_path, "wb") as f:
-        f.write(token)
+    if compatible:
+        with open(output_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(format_compatible_token(token))
+    else:
+        with open(output_path, "wb") as f:
+            f.write(token)
 
     return output_path
 
@@ -75,6 +85,7 @@ def encrypt_directory(
     password: str,
     output_path: str = None,
     security: SecurityProfile = SECURITY_STANDARD,
+    compatible: bool = False,
 ) -> str:
     """
     Encrypt a complete directory into a single encrypted file.
@@ -92,7 +103,8 @@ def encrypt_directory(
 
     if output_path is None:
         parent_dir = os.path.dirname(source_dir)
-        base_name = build_hashed_output_name(file_bytes=archive_bytes)
+        ext = build_compatible_extension() if compatible else DEFAULT_ENCRYPTED_EXTENSION
+        base_name = build_hashed_output_name(file_bytes=archive_bytes, ext=ext)
         output_path = os.path.join(parent_dir, base_name)
 
     output_path = os.path.abspath(os.path.expanduser(output_path))
@@ -106,8 +118,12 @@ def encrypt_directory(
     security = require_security_profile(security)
     token = encrypt_payload(payload, password, security=security)
 
-    with open(output_path, "wb") as f:
-        f.write(token)
+    if compatible:
+        with open(output_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(format_compatible_token(token))
+    else:
+        with open(output_path, "wb") as f:
+            f.write(token)
 
     return output_path
 
@@ -138,7 +154,8 @@ def decrypt_file(
         raise FileNotFoundError(f"Encrypted file not found: {source_path}")
 
     with open(source_path, "rb") as f:
-        token = f.read()
+        raw_token = f.read()
+    token = parse_compatible_token(raw_token) or raw_token
     payload = decrypt_payload(token, password)
 
     metadata, file_bytes = unpack_file_payload(payload)
@@ -184,7 +201,8 @@ def decrypt_directory(
         raise FileNotFoundError(f"Encrypted file not found: {source_path}")
 
     with open(source_path, "rb") as f:
-        token = f.read()
+        raw_token = f.read()
+    token = parse_compatible_token(raw_token) or raw_token
     payload = decrypt_payload(token, password)
 
     metadata, archive_bytes = unpack_file_payload(payload)

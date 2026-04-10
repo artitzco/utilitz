@@ -16,7 +16,22 @@ classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Operating System :: OS Independent",
 ]
-dependencies = [
+dependencies = []
+
+[project.optional-dependencies]
+office = [
+    "pandas",
+    "pyarrow",
+    "openpyxl"
+]
+gui = [
+    "pyautogui",
+    "pynput"
+]
+crypto = [
+    "cryptography"
+]
+all = [
     "pandas",
     "pyarrow",
     "openpyxl",
@@ -24,6 +39,7 @@ dependencies = [
     "pynput",
     "cryptography"
 ]
+
 [project.urls]
 Homepage = "https://github.com/artitzco/utilitz"
 Issues = "https://github.com/artitzco/utilitz/issues"

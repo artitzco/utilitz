@@ -1,12 +1,25 @@
-from pynput import keyboard, mouse
+try:
+    from pynput import keyboard, mouse
+    import pyautogui
+    HAS_GUI = True
+except ImportError:
+    HAS_GUI = False
+
+def _check_gui():
+    if not HAS_GUI:
+        raise ImportError(
+            "The 'pyautogui' and 'pynput' libraries are required for GUI utilities. "
+            "Install them with: pip install utilitz[gui]"
+        )
+
 from datetime import datetime
-import pyautogui
 import time
 
 
 class MonitorActivity:
 
     def __init__(self):
+        _check_gui()
         self.last_activity_time = time.monotonic()
         self._keyboard_listener = keyboard.Listener(
             on_press=self._on_keyboard_event,
@@ -43,6 +56,7 @@ class MonitorActivity:
 
 
 def monitor_keep_alive(seconds, key='ctrl', verbose=1, tolerance=0.1):
+    _check_gui()
     def time_format(ts):
         return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 

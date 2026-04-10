@@ -1,5 +1,15 @@
 import string
-import pandas as pd
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+
+def _check_pandas():
+    if pd is None:
+        raise ImportError(
+            "The 'pandas' library is required for excel utilities. "
+            "Install it with: pip install utilitz[office]"
+        )
 import re
 
 
@@ -103,6 +113,7 @@ def read_excel_table(io,
     >>> # Read rows in column "B" that start with digits
     >>> df = read_excel_table("data.xlsx", checkcol="B", patterncol=r"^\\d+")
     """
+    _check_pandas()
     if raw_df is not None:
         raise ValueError('"raw_df" is not implemented yet')
 

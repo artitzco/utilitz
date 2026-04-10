@@ -1,8 +1,20 @@
 import base64
 import os
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
-from cryptography.fernet import Fernet
+
+try:
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.fernet import Fernet
+    HAS_CRYPTO = True
+except ImportError:
+    HAS_CRYPTO = False
+
+def _check_crypto():
+    if not HAS_CRYPTO:
+        raise ImportError(
+            "The 'cryptography' library is required for crypto utilities. "
+            "Install it with: pip install utilitz[crypto]"
+        )
 
 
 def _derive_key(password: str, salt: bytes) -> bytes:
@@ -25,6 +37,7 @@ def encrypt(plaintext: str, password: str) -> str:
     A random salt is generated and prepended to the encrypted payload.
     The final result is base64-url encoded for safe storage or transport.
     """
+    _check_crypto()
     salt = os.urandom(16)  # must be stored along with the ciphertext
     key = _derive_key(password, salt)
     fernet = Fernet(key)
@@ -39,6 +52,7 @@ def decrypt(encrypted_text: str, password: str) -> str:
 
     The salt is extracted from the encrypted payload to re-derive the key.
     """
+    _check_crypto()
     data = base64.urlsafe_b64decode(encrypted_text.encode())
     salt = data[:16]
     ciphertext = data[16:]

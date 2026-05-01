@@ -1,16 +1,7 @@
-import string
-try:
-    import pandas as pd
-except ImportError:
-    pd = None
-
-def _check_pandas():
-    if pd is None:
-        raise ImportError(
-            "The 'pandas' library is required for excel utilities. "
-            "Install it with: pip install utilitz[office]"
-        )
 import re
+import string
+import warnings
+import pandas as pd
 
 
 def encode_column(column):
@@ -59,60 +50,36 @@ def decode_column(code):
     return value - 1
 
 
+def _check_pandas():
+    if pd is None:
+        raise ImportError(
+            "The 'pandas' library is required for excel utilities. "
+            "Install it with: pip install utilitz[office]"
+        )
+
+
 def read_excel_table(io,
                      sheet_name=0,
-                     usecols=None,  # En el futuro detectar rangos de columnas
-                     header=0,  # En el futuro utilizar multiheaders
+                     usecols=None,
+                     header=0,
                      nrows=None,
-                     checkcol=None,  # En el futuro puede ser numérica
+                     checkcol=None,
                      patterncol=None,
                      findheaders=False,
                      raw_df=None,
                      **kwargs):
     """
+    [DEPRECATED] Use read_excel instead.
+    
     Reads a table from an Excel sheet with optional row filtering
     based on a control column and a regex pattern.
-
-    Parameters:
-    ----------
-    io : str, path object, or file-like object
-        Path, URL, or buffer pointing to the Excel file.
-    sheet_name : int or str, default=0
-        Name or index of the sheet to load.
-    usecols : str, list, or None, optional
-        Subset of columns to select (as in pandas.read_excel).
-    header : int or None, default=0
-        Row to use as column names. If None, no header is used.
-    nrows : int or None, optional
-        Number of rows to read. If None, determined dynamically when
-        `checkcol` is provided.
-    checkcol : str, optional
-        Excel-style column name (e.g., "A") used to determine how many
-        rows to include. Reading stops at the first blank or invalid row.
-    patterncol : str, optional
-        Regular expression. Only rows matching this pattern in `checkcol`
-        are included.
-    findheaders : bool, default=False
-        If True, detects multiple tables in the sheet by looking for
-        non-empty cells in `checkcol`. Returns a list of DataFrames.
-    raw_df : pandas.DataFrame, optional
-        Preloaded DataFrame to avoid re-reading the Excel file.
-    **kwargs : dict
-        Additional arguments passed to pandas.read_excel.
-
-    Returns:
-    -------
-    pandas.DataFrame
-        DataFrame containing the requested portion of the sheet.
-
-    Examples:
-    --------
-    >>> # Read until the first empty cell in column "A"
-    >>> df = read_excel_table("data.xlsx", checkcol="A")
-
-    >>> # Read rows in column "B" that start with digits
-    >>> df = read_excel_table("data.xlsx", checkcol="B", patterncol=r"^\\d+")
     """
+    warnings.warn(
+        "read_excel_table is deprecated and will be removed in a future version. "
+        "Please use read_excel from utilitz.excel instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
     _check_pandas()
     if raw_df is not None:
         raise ValueError('"raw_df" is not implemented yet')
@@ -124,7 +91,7 @@ def read_excel_table(io,
                                header=None,
                                sheet_name=sheet_name,
                                dtype=str)
-        # En el futuro se puede utilizar la primera columna de usecols
+        # In the future, the first column of usecols can be used
         checkcol = 'A' if checkcol is None else checkcol
         column = raw_df[raw_df.columns[decode_column(
             checkcol)]].reset_index(drop=True)

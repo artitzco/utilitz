@@ -108,9 +108,11 @@ def _parse_row_range_string(value: str, *, max_len: int, open_start: int) -> lis
             raise ValueError(f"Invalid row range: {value!r}")
         left, right = [part.strip() for part in text.split("-")]
         if left and not re.fullmatch(r"\d+", left):
-            raise ValueError(f"Row index range requires 0-indexed integers: {value!r}")
+            raise ValueError(
+                f"Row index range requires 0-indexed integers: {value!r}")
         if right and not re.fullmatch(r"\d+", right):
-            raise ValueError(f"Row index range requires 0-indexed integers: {value!r}")
+            raise ValueError(
+                f"Row index range requires 0-indexed integers: {value!r}")
         start = None if left == "" else int(left)
         end = None if right == "" else int(right)
         return _inclusive_range(start, end, max_len=max_len, open_start=open_start)
@@ -152,6 +154,67 @@ def _dedupe_sorted(values: Iterable[int]) -> list[int]:
     return sorted(set(values))
 
 
+def _maybe_seek_start(io: Any) -> None:
+    seek = getattr(io, "seek", None)
+    if callable(seek):
+        try:
+            seek(0)
+        except (OSError, ValueError):
+            pass
+
+
+def _resolve_sheet_name(xls: pd.ExcelFile, sheet_name: str | int) -> str:
+    if isinstance(sheet_name, int):
+        try:
+            return xls.sheet_names[sheet_name]
+        except IndexError as exc:
+            raise ValueError(f"Worksheet index {sheet_name} is invalid.") from exc
+    return sheet_name
+
+
+def _get_sheet_dimensions(
+    io: Any,
+    *,
+    sheet_name: str | int,
+    engine: str | None,
+    keep_default_na: bool,
+) -> tuple[int, int]:
+    try:
+        xls = pd.ExcelFile(io, engine=engine)
+        resolved_sheet = _resolve_sheet_name(xls, sheet_name)
+        book = xls.book
+
+        if hasattr(book, "__getitem__"):
+            worksheet = book[resolved_sheet]
+            if hasattr(worksheet, "max_row") and hasattr(worksheet, "max_column"):
+                return int(worksheet.max_row), int(worksheet.max_column)
+
+        if hasattr(book, "sheet_by_name"):
+            worksheet = book.sheet_by_name(resolved_sheet)
+            if hasattr(worksheet, "nrows") and hasattr(worksheet, "ncols"):
+                return int(worksheet.nrows), int(worksheet.ncols)
+    except Exception:
+        pass
+    finally:
+        try:
+            xls.close()  # type: ignore[name-defined]
+        except Exception:
+            pass
+        _maybe_seek_start(io)
+
+    # Fallback for engines that do not expose dimensions through ExcelFile.
+    raw = pd.read_excel(
+        io,
+        sheet_name=sheet_name,
+        header=None,
+        dtype=object,
+        engine=engine,
+        keep_default_na=keep_default_na,
+    )
+    _maybe_seek_start(io)
+    return raw.shape
+
+
 def _parse_rows(selection: Any, *, max_len: int, open_start: int) -> list[int] | None:
     if selection is None:
         return None
@@ -166,7 +229,8 @@ def _parse_rows(selection: Any, *, max_len: int, open_start: int) -> list[int] |
 
     if isinstance(selection, tuple):
         if len(selection) != 2:
-            raise ValueError(f"Tuple ranges require two elements: {selection!r}")
+            raise ValueError(
+                f"Tuple ranges require two elements: {selection!r}")
         left, right = selection
         start = None if left is None else _parse_row_atom(left)
         end = None if right is None else _parse_row_atom(right)
@@ -192,7 +256,8 @@ def _parse_cols(selection: Any, *, max_len: int, open_start: int = 0) -> list[in
 
     if isinstance(selection, tuple):
         if len(selection) != 2:
-            raise ValueError(f"Tuple ranges require two elements: {selection!r}")
+            raise ValueError(
+                f"Tuple ranges require two elements: {selection!r}")
         left, right = selection
         start = None if left is None else _parse_col_atom(left)
         end = None if right is None else _parse_col_atom(right)
@@ -227,7 +292,8 @@ def _normalise_stop_regex(stop_regex: Any, n_stop_cols: int) -> list[str | None]
 
     if isinstance(stop_regex, list):
         if len(stop_regex) != n_stop_cols:
-            raise ValueError(f"stop_regex must have {n_stop_cols} elements; received {len(stop_regex)}.")
+            raise ValueError(
+                f"stop_regex must have {n_stop_cols} elements; received {len(stop_regex)}.")
         if not all(item is None or isinstance(item, str) for item in stop_regex):
             raise TypeError("Each element of stop_regex must be None or str.")
         return stop_regex
@@ -246,7 +312,8 @@ def _eval_stop_logic(valids: list[bool], stop_logic: str) -> bool:
     def replace_placeholder(match: re.Match[str]) -> str:
         idx = int(match.group(1))
         if idx >= len(valids):
-            raise ValueError(f"stop_logic references [{idx}], but there are only {len(valids)} stop_cols.")
+            raise ValueError(
+                f"stop_logic references [{idx}], but there are only {len(valids)} stop_cols.")
         return f"vals[{idx}]"
 
     expr = re.sub(r"\[(\d+)\]", replace_placeholder, logic)
@@ -270,11 +337,13 @@ def _eval_stop_logic(valids: list[bool], stop_logic: str) -> bool:
 
     for node in ast.walk(tree):
         if not isinstance(node, allowed_nodes):
-            raise ValueError(f"Disallowed stop_logic expression: {stop_logic!r}")
+            raise ValueError(
+                f"Disallowed stop_logic expression: {stop_logic!r}")
         if isinstance(node, ast.Name) and node.id != "vals":
             raise ValueError(f"Disallowed name in stop_logic: {node.id!r}")
         if isinstance(node, ast.Constant) and not isinstance(node.value, int):
-            raise ValueError(f"Disallowed constant in stop_logic: {node.value!r}")
+            raise ValueError(
+                f"Disallowed constant in stop_logic: {node.value!r}")
 
     return bool(eval(compile(tree, "<stop_logic>", "eval"), {"__builtins__": {}}, {"vals": valids}))
 
@@ -293,7 +362,8 @@ def _validate_stop_row(
         if pattern is None:
             valids.append(not _is_effectively_null(value))
         else:
-            valids.append(False if _is_effectively_null(value) else re.search(pattern, str(value)) is not None)
+            valids.append(False if _is_effectively_null(value)
+                          else re.search(pattern, str(value)) is not None)
 
     return _eval_stop_logic(valids, stop_logic)
 
@@ -307,6 +377,132 @@ def _absolute_to_relative_index(index_cols: list[int] | None, final_cols: list[i
     if not rel:
         return None
     return rel[0] if len(rel) == 1 else rel
+
+
+def _set_index_from_positions(
+    df: pd.DataFrame, index_positions: int | list[int] | None
+) -> pd.DataFrame:
+    if index_positions is None:
+        return df
+
+    positions = [index_positions] if isinstance(index_positions, int) else list(index_positions)
+    if not positions:
+        return df
+
+    for pos in positions:
+        if pos < 0 or pos >= df.shape[1]:
+            raise ValueError(f"Index position out of bounds after column filtering: {pos}")
+
+    names = [df.columns[pos] for pos in positions]
+    arrays = [df.iloc[:, pos] for pos in positions]
+
+    if len(positions) == 1:
+        new_index = pd.Index(arrays[0], name=names[0])
+    else:
+        new_index = pd.MultiIndex.from_arrays(arrays, names=names)
+
+    to_drop = set(positions)
+    keep_positions = [pos for pos in range(df.shape[1]) if pos not in to_drop]
+    out = df.iloc[:, keep_positions].copy()
+    out.index = new_index
+    return out
+
+
+def _positions_for_columns(columns: list[int], source_cols: list[int]) -> list[int]:
+    position = {col: pos for pos, col in enumerate(source_cols)}
+    return [position[col] for col in columns if col in position]
+
+
+def _apply_post_read_stop(
+    df: pd.DataFrame,
+    *,
+    source_cols: list[int],
+    sensor_cols: list[int],
+    stop_regex: Any,
+    stop_logic: str,
+    stop_func: Callable[..., bool] | None,
+) -> pd.DataFrame:
+    sensor_positions = _positions_for_columns(sensor_cols, source_cols)
+    if len(sensor_positions) != len(sensor_cols):
+        missing = sorted(set(sensor_cols) - set(source_cols))
+        raise ValueError(f"stop_cols were not read: {missing!r}")
+
+    patterns = _normalise_stop_regex(stop_regex, len(sensor_cols))
+    regex_values = None
+    if stop_func is None:
+        regex_values = df.iloc[:, sensor_positions].astype("string")
+
+    keep_count = 0
+    for row_pos in range(len(df)):
+        if stop_func is None:
+            values = list(regex_values.iloc[row_pos])  # type: ignore[union-attr]
+        else:
+            values = list(df.iloc[row_pos, sensor_positions])
+
+        if not _validate_stop_row(values, patterns, stop_logic, stop_func):
+            break
+        keep_count += 1
+
+    return df.iloc[:keep_count]
+
+
+def _read_final_columns(
+    io: Any,
+    *,
+    sheet_name: str | int,
+    header_arg: int | list[int] | None,
+    read_cols: list[int],
+    read_nrows: int,
+    dtype: Any,
+    parse_dates: Any,
+    converters: Any,
+    na_values: Any,
+    keep_default_na: bool,
+    engine: str | None,
+    decimal: str,
+    thousands: str | None,
+    verbose: bool,
+) -> pd.DataFrame:
+    is_multi_header = isinstance(header_arg, list) and len(header_arg) > 1
+
+    if is_multi_header:
+        # pandas does not support usecols together with a multi-index header.
+        df = pd.read_excel(
+            io,
+            sheet_name=sheet_name,
+            header=header_arg,
+            index_col=None,
+            usecols=None,
+            nrows=read_nrows,
+            dtype=dtype,
+            parse_dates=parse_dates,
+            converters=converters,
+            na_values=na_values,
+            keep_default_na=keep_default_na,
+            engine=engine,
+            decimal=decimal,
+            thousands=thousands,
+            verbose=verbose,
+        )
+        return df.iloc[:, read_cols]
+
+    return pd.read_excel(
+        io,
+        sheet_name=sheet_name,
+        header=header_arg,
+        index_col=None,
+        usecols=read_cols,
+        nrows=read_nrows,
+        dtype=dtype,
+        parse_dates=parse_dates,
+        converters=converters,
+        na_values=na_values,
+        keep_default_na=keep_default_na,
+        engine=engine,
+        decimal=decimal,
+        thousands=thousands,
+        verbose=verbose,
+    )
 
 
 def _read_excel_single(
@@ -324,6 +520,7 @@ def _read_excel_single(
     stop_regex: Any = None,
     stop_logic: str = "OR",
     stop_func: Callable[..., bool] | None = None,
+    stop_precheck: bool = True,
     dtype: Any = None,
     parse_dates: Any = False,
     converters: Any = None,
@@ -338,18 +535,18 @@ def _read_excel_single(
         raise ValueError("nrows cannot be negative.")
     if stop_func is not None and not callable(stop_func):
         raise TypeError("stop_func must be callable.")
+    if not isinstance(stop_precheck, bool):
+        raise TypeError("stop_precheck must be a boolean.")
 
-    raw = pd.read_excel(
+    max_rows, max_cols = _get_sheet_dimensions(
         io,
         sheet_name=sheet_name,
-        header=None,
-        dtype=str if stop_cols is not None else object,
         engine=engine,
-        keep_default_na=False if stop_cols is not None else keep_default_na,
+        keep_default_na=keep_default_na,
     )
-    max_rows, max_cols = raw.shape
 
-    header_rows = [] if columns is None else (_parse_rows(columns, max_len=max_rows, open_start=0) or [])
+    header_rows = [] if columns is None else (
+        _parse_rows(columns, max_len=max_rows, open_start=0) or [])
     header_rows = _dedupe_sorted(header_rows)
     data_start = (max(header_rows) + 1) if header_rows else 0
 
@@ -358,23 +555,39 @@ def _read_excel_single(
         selected_rows = list(range(data_start, max_rows))
 
     header_set = set(header_rows)
-    selected_rows = [row for row in selected_rows if row >= data_start and row not in header_set]
+    selected_rows = [row for row in selected_rows if row >=
+                     data_start and row not in header_set]
 
-    skipped_rows = set(_parse_rows(skip_rows, max_len=max_rows, open_start=data_start) or [])
+    skipped_rows = set(_parse_rows(
+        skip_rows, max_len=max_rows, open_start=data_start) or [])
     selected_rows = [row for row in selected_rows if row not in skipped_rows]
 
+    sensor_cols: list[int] | None = None
     if stop_cols is not None:
-        sensor_cols = _parse_cols(stop_cols, max_len=max_cols, open_start=0) or []
+        sensor_cols = _parse_cols(
+            stop_cols, max_len=max_cols, open_start=0) or []
         if not sensor_cols:
             raise ValueError("stop_cols did not select any columns.")
+
+    if sensor_cols is not None and stop_precheck:
+        raw_stop = pd.read_excel(
+            io,
+            sheet_name=sheet_name,
+            header=None,
+            usecols=sensor_cols,
+            dtype=str,
+            engine=engine,
+            keep_default_na=False,
+        )
+        _maybe_seek_start(io)
 
         patterns = _normalise_stop_regex(stop_regex, len(sensor_cols))
         truncated_rows: list[int] = []
 
         for row in selected_rows:
             values = [
-                raw.iat[row, col] if row < max_rows and col < max_cols else None
-                for col in sensor_cols
+                raw_stop.iat[row, pos] if row < len(raw_stop) else None
+                for pos in range(len(sensor_cols))
             ]
             if not _validate_stop_row(values, patterns, stop_logic, stop_func):
                 break
@@ -395,13 +608,18 @@ def _read_excel_single(
     if index_cols:
         final_cols = _dedupe_sorted([*final_cols, *index_cols])
 
-    skipped_cols = set(_parse_cols(skip_cols, max_len=max_cols, open_start=0) or [])
-    final_cols = [col for col in _dedupe_sorted(final_cols) if col not in skipped_cols]
+    skipped_cols = set(_parse_cols(
+        skip_cols, max_len=max_cols, open_start=0) or [])
+    final_cols = [col for col in _dedupe_sorted(
+        final_cols) if col not in skipped_cols]
 
     if not final_cols:
-        raise ValueError("No columns remain to be read after applying cols/skip_cols/index.")
+        raise ValueError(
+            "No columns remain to be read after applying cols/skip_cols/index.")
 
-    index_col = _absolute_to_relative_index(index_cols, final_cols)
+    read_cols = final_cols
+    if sensor_cols is not None and not stop_precheck:
+        read_cols = _dedupe_sorted([*final_cols, *sensor_cols])
 
     header_arg: int | list[int] | None
     if columns is None:
@@ -416,13 +634,12 @@ def _read_excel_single(
     else:
         read_nrows = 0
 
-    df = pd.read_excel(
+    df = _read_final_columns(
         io,
         sheet_name=sheet_name,
-        header=header_arg,
-        index_col=index_col,
-        usecols=final_cols,
-        nrows=read_nrows,
+        header_arg=header_arg,
+        read_cols=read_cols,
+        read_nrows=read_nrows,
         dtype=dtype,
         parse_dates=parse_dates,
         converters=converters,
@@ -437,10 +654,27 @@ def _read_excel_single(
     if selected_rows:
         selected_set = set(selected_rows)
         absolute_rows = list(range(data_start, data_start + len(df)))
-        positions = [pos for pos, abs_row in enumerate(absolute_rows) if abs_row in selected_set]
+        positions = [pos for pos, abs_row in enumerate(
+            absolute_rows) if abs_row in selected_set]
         df = df.iloc[positions]
     else:
         df = df.iloc[0:0]
+
+    if sensor_cols is not None and not stop_precheck:
+        df = _apply_post_read_stop(
+            df,
+            source_cols=read_cols,
+            sensor_cols=sensor_cols,
+            stop_regex=stop_regex,
+            stop_logic=stop_logic,
+            stop_func=stop_func,
+        )
+
+    final_positions = _positions_for_columns(final_cols, read_cols)
+    df = df.iloc[:, final_positions]
+
+    index_col = _absolute_to_relative_index(index_cols, final_cols)
+    df = _set_index_from_positions(df, index_col)
 
     if index_col is None:
         df = df.reset_index(drop=True)
@@ -450,7 +684,7 @@ def _read_excel_single(
 
 def read_excel(
     io: Any,
-    sheet_name: str | int | None = 0,
+    sheet_name: str | int = 0,
     columns: Any = 0,
     index: Any = None,
     cols: Any = None,
@@ -462,6 +696,7 @@ def read_excel(
     stop_regex: Any = None,
     stop_logic: str = "OR",
     stop_func: Callable[..., bool] | None = None,
+    stop_precheck: bool = True,
     dtype: Any = None,
     parse_dates: Any = False,
     converters: Any = None,
@@ -471,7 +706,7 @@ def read_excel(
     decimal: str = ".",
     thousands: str | None = None,
     verbose: bool = False,
-) -> pd.DataFrame | dict[str, pd.DataFrame]:
+) -> pd.DataFrame:
     """
     Reads an Excel file using absolute and intuitive coordinates for rows and columns.
 
@@ -487,37 +722,11 @@ def read_excel(
     - Open-start rows range starts immediately after the last header row.
     - skip_rows is applied before nrows, thus not counting towards the limit.
     - skip_cols removes columns even if they were included by cols or index.
-    - stop_cols triggers a raw read and truncates at the first invalid row.
+    - stop_cols uses a raw string sensor read when stop_precheck=True.
     """
-    if sheet_name is None:
-        xls = pd.ExcelFile(io, engine=engine)
-        return {
-            name: _read_excel_single(
-                io,
-                sheet_name=name,
-                columns=columns,
-                index=index,
-                cols=cols,
-                rows=rows,
-                nrows=nrows,
-                skip_rows=skip_rows,
-                skip_cols=skip_cols,
-                stop_cols=stop_cols,
-                stop_regex=stop_regex,
-                stop_logic=stop_logic,
-                stop_func=stop_func,
-                dtype=dtype,
-                parse_dates=parse_dates,
-                converters=converters,
-                na_values=na_values,
-                keep_default_na=keep_default_na,
-                engine=engine,
-                decimal=decimal,
-                thousands=thousands,
-                verbose=verbose,
-            )
-            for name in xls.sheet_names
-        }
+    if sheet_name is None or isinstance(sheet_name, list):
+        raise TypeError(
+            "read_excel reads a single sheet; pass a sheet name or index.")
 
     return _read_excel_single(
         io,
@@ -533,6 +742,7 @@ def read_excel(
         stop_regex=stop_regex,
         stop_logic=stop_logic,
         stop_func=stop_func,
+        stop_precheck=stop_precheck,
         dtype=dtype,
         parse_dates=parse_dates,
         converters=converters,

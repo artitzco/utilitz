@@ -95,6 +95,23 @@ def _inclusive_range(
 def _parse_row_range_string(value: str, *, max_len: int, open_start: int) -> list[int]:
     text = value.strip()
 
+    if text.startswith("[") or text.endswith("]"):
+        if not (text.startswith("[") and text.endswith("]")):
+            raise ValueError(f"Invalid row index range: {value!r}")
+        inner = text[1:-1].strip()
+        if inner.count(":") != 1:
+            raise ValueError(f"Invalid row index range: {value!r}")
+        left, right = [part.strip() for part in inner.split(":")]
+        if left and not re.fullmatch(r"\d+", left):
+            raise ValueError(
+                f"Row index range requires 0-indexed integers: {value!r}")
+        if right and not re.fullmatch(r"\d+", right):
+            raise ValueError(
+                f"Row index range requires 0-indexed integers: {value!r}")
+        start = None if left == "" else int(left)
+        end = None if right == "" else int(right)
+        return _inclusive_range(start, end, max_len=max_len, open_start=open_start)
+
     if ":" in text:
         if text.count(":") != 1:
             raise ValueError(f"Invalid row range: {value!r}")
@@ -103,25 +120,30 @@ def _parse_row_range_string(value: str, *, max_len: int, open_start: int) -> lis
         end = None if right == "" else _parse_row_atom(right)
         return _inclusive_range(start, end, max_len=max_len, open_start=open_start)
 
-    if "-" in text:
-        if text.count("-") != 1:
-            raise ValueError(f"Invalid row range: {value!r}")
-        left, right = [part.strip() for part in text.split("-")]
-        if left and not re.fullmatch(r"\d+", left):
-            raise ValueError(
-                f"Row index range requires 0-indexed integers: {value!r}")
-        if right and not re.fullmatch(r"\d+", right):
-            raise ValueError(
-                f"Row index range requires 0-indexed integers: {value!r}")
-        start = None if left == "" else int(left)
-        end = None if right == "" else int(right)
-        return _inclusive_range(start, end, max_len=max_len, open_start=open_start)
-
     return [_parse_row_atom(text)]
 
 
 def _parse_col_range_string(value: str, *, max_len: int, open_start: int = 0) -> list[int]:
     text = value.strip()
+
+    if text.startswith("[") or text.endswith("]"):
+        if not (text.startswith("[") and text.endswith("]")):
+            raise ValueError(f"Invalid column index range: {value!r}")
+        inner = text[1:-1].strip()
+        if inner.count(":") != 1:
+            raise ValueError(f"Invalid column index range: {value!r}")
+        left, right = [part.strip() for part in inner.split(":")]
+        if left and not re.fullmatch(r"\d+", left):
+            raise ValueError(
+                f"Column index range requires 0-indexed integers; use 'A:D' for letters: {value!r}"
+            )
+        if right and not re.fullmatch(r"\d+", right):
+            raise ValueError(
+                f"Column index range requires 0-indexed integers; use 'A:D' for letters: {value!r}"
+            )
+        start = None if left == "" else int(left)
+        end = None if right == "" else int(right)
+        return _inclusive_range(start, end, max_len=max_len, open_start=open_start)
 
     if ":" in text:
         if text.count(":") != 1:
@@ -129,22 +151,6 @@ def _parse_col_range_string(value: str, *, max_len: int, open_start: int = 0) ->
         left, right = [part.strip() for part in text.split(":")]
         start = None if left == "" else _parse_col_atom(left)
         end = None if right == "" else _parse_col_atom(right)
-        return _inclusive_range(start, end, max_len=max_len, open_start=open_start)
-
-    if "-" in text:
-        if text.count("-") != 1:
-            raise ValueError(f"Invalid column range: {value!r}")
-        left, right = [part.strip() for part in text.split("-")]
-        if left and not re.fullmatch(r"\d+", left):
-            raise ValueError(
-                f"Column index range requires 0-indexed integers; use 'A:D' for letters: {value!r}"
-            )
-        if right and not re.fullmatch(r"\d+", right):
-            raise ValueError(
-                f"Column index range requires 0-indexed integers; use 'A:D' for letters: {value!r}"
-            )
-        start = None if left == "" else int(left)
-        end = None if right == "" else int(right)
         return _inclusive_range(start, end, max_len=max_len, open_start=open_start)
 
     return [_parse_col_atom(text)]
@@ -236,7 +242,9 @@ def _parse_rows(selection: Any, *, max_len: int, open_start: int) -> list[int] |
         end = None if right is None else _parse_row_atom(right)
         return _inclusive_range(start, end, max_len=max_len, open_start=open_start)
 
-    if isinstance(selection, str) and (":" in selection or "-" in selection):
+    if isinstance(selection, str) and (
+        ":" in selection or selection.strip().startswith("[") or selection.strip().endswith("]")
+    ):
         return _dedupe_sorted(_parse_row_range_string(selection, max_len=max_len, open_start=open_start))
 
     return [_parse_row_atom(selection)]
@@ -263,7 +271,9 @@ def _parse_cols(selection: Any, *, max_len: int, open_start: int = 0) -> list[in
         end = None if right is None else _parse_col_atom(right)
         return _inclusive_range(start, end, max_len=max_len, open_start=open_start)
 
-    if isinstance(selection, str) and (":" in selection or "-" in selection):
+    if isinstance(selection, str) and (
+        ":" in selection or selection.strip().startswith("[") or selection.strip().endswith("]")
+    ):
         return _dedupe_sorted(_parse_col_range_string(selection, max_len=max_len, open_start=open_start))
 
     return [_parse_col_atom(selection)]
@@ -280,29 +290,29 @@ def _is_effectively_null(value: Any) -> bool:
     return isinstance(value, str) and value.strip() == ""
 
 
-def _normalise_stop_regex(stop_regex: Any, n_stop_cols: int) -> list[str | None]:
-    if n_stop_cols == 0:
+def _normalise_check_regex(check_regex: Any, n_check_cols: int) -> list[str | None]:
+    if n_check_cols == 0:
         return []
 
-    if stop_regex is None:
-        return [None] * n_stop_cols
+    if check_regex is None:
+        return [None] * n_check_cols
 
-    if isinstance(stop_regex, str):
-        return [stop_regex] * n_stop_cols
+    if isinstance(check_regex, str):
+        return [check_regex] * n_check_cols
 
-    if isinstance(stop_regex, list):
-        if len(stop_regex) != n_stop_cols:
+    if isinstance(check_regex, list):
+        if len(check_regex) != n_check_cols:
             raise ValueError(
-                f"stop_regex must have {n_stop_cols} elements; received {len(stop_regex)}.")
-        if not all(item is None or isinstance(item, str) for item in stop_regex):
-            raise TypeError("Each element of stop_regex must be None or str.")
-        return stop_regex
+                f"check_regex must have {n_check_cols} elements; received {len(check_regex)}.")
+        if not all(item is None or isinstance(item, str) for item in check_regex):
+            raise TypeError("Each element of check_regex must be None or str.")
+        return check_regex
 
-    raise TypeError("stop_regex must be None, str or list[None | str].")
+    raise TypeError("check_regex must be None, str or list[None | str].")
 
 
-def _eval_stop_logic(valids: list[bool], stop_logic: str) -> bool:
-    logic = stop_logic.strip()
+def _eval_check_logic(valids: list[bool], check_logic: str) -> bool:
+    logic = check_logic.strip()
 
     if logic.upper() == "AND":
         return all(valids)
@@ -313,7 +323,7 @@ def _eval_stop_logic(valids: list[bool], stop_logic: str) -> bool:
         idx = int(match.group(1))
         if idx >= len(valids):
             raise ValueError(
-                f"stop_logic references [{idx}], but there are only {len(valids)} stop_cols.")
+                f"check_logic references [{idx}], but there are only {len(valids)} check_cols.")
         return f"vals[{idx}]"
 
     expr = re.sub(r"\[(\d+)\]", replace_placeholder, logic)
@@ -338,24 +348,24 @@ def _eval_stop_logic(valids: list[bool], stop_logic: str) -> bool:
     for node in ast.walk(tree):
         if not isinstance(node, allowed_nodes):
             raise ValueError(
-                f"Disallowed stop_logic expression: {stop_logic!r}")
+                f"Disallowed check_logic expression: {check_logic!r}")
         if isinstance(node, ast.Name) and node.id != "vals":
-            raise ValueError(f"Disallowed name in stop_logic: {node.id!r}")
+            raise ValueError(f"Disallowed name in check_logic: {node.id!r}")
         if isinstance(node, ast.Constant) and not isinstance(node.value, int):
             raise ValueError(
-                f"Disallowed constant in stop_logic: {node.value!r}")
+                f"Disallowed constant in check_logic: {node.value!r}")
 
-    return bool(eval(compile(tree, "<stop_logic>", "eval"), {"__builtins__": {}}, {"vals": valids}))
+    return bool(eval(compile(tree, "<check_logic>", "eval"), {"__builtins__": {}}, {"vals": valids}))
 
 
-def _validate_stop_row(
+def _validate_check_row(
     values: list[Any],
     patterns: list[str | None],
-    stop_logic: str,
-    stop_func: Callable[..., bool] | None,
+    check_logic: str,
+    check_func: Callable[..., bool] | None,
 ) -> bool:
-    if stop_func is not None:
-        return bool(stop_func(*values))
+    if check_func is not None:
+        return bool(check_func(*values))
 
     valids: list[bool] = []
     for value, pattern in zip(values, patterns):
@@ -365,7 +375,7 @@ def _validate_stop_row(
             valids.append(False if _is_effectively_null(value)
                           else re.search(pattern, str(value)) is not None)
 
-    return _eval_stop_logic(valids, stop_logic)
+    return _eval_check_logic(valids, check_logic)
 
 
 def _absolute_to_relative_index(index_cols: list[int] | None, final_cols: list[int]) -> int | list[int] | None:
@@ -413,33 +423,33 @@ def _positions_for_columns(columns: list[int], source_cols: list[int]) -> list[i
     return [position[col] for col in columns if col in position]
 
 
-def _apply_post_read_stop(
+def _apply_post_read_check(
     df: pd.DataFrame,
     *,
     source_cols: list[int],
     sensor_cols: list[int],
-    stop_regex: Any,
-    stop_logic: str,
-    stop_func: Callable[..., bool] | None,
+    check_regex: Any,
+    check_logic: str,
+    check_func: Callable[..., bool] | None,
 ) -> pd.DataFrame:
     sensor_positions = _positions_for_columns(sensor_cols, source_cols)
     if len(sensor_positions) != len(sensor_cols):
         missing = sorted(set(sensor_cols) - set(source_cols))
-        raise ValueError(f"stop_cols were not read: {missing!r}")
+        raise ValueError(f"check_cols were not read: {missing!r}")
 
-    patterns = _normalise_stop_regex(stop_regex, len(sensor_cols))
+    patterns = _normalise_check_regex(check_regex, len(sensor_cols))
     regex_values = None
-    if stop_func is None:
+    if check_func is None:
         regex_values = df.iloc[:, sensor_positions].astype("string")
 
     keep_count = 0
     for row_pos in range(len(df)):
-        if stop_func is None:
+        if check_func is None:
             values = list(regex_values.iloc[row_pos])  # type: ignore[union-attr]
         else:
             values = list(df.iloc[row_pos, sensor_positions])
 
-        if not _validate_stop_row(values, patterns, stop_logic, stop_func):
+        if not _validate_check_row(values, patterns, check_logic, check_func):
             break
         keep_count += 1
 
@@ -509,18 +519,20 @@ def _read_excel_single(
     io: Any,
     *,
     sheet_name: str | int = 0,
-    columns: Any = 0,
+    header: Any = 0,
+    columns: Any = None,
     index: Any = None,
-    cols: Any = None,
-    rows: Any = None,
+    usecols: Any = None,
+    userows: Any = None,
     nrows: int | None = None,
+    ncols: int | None = None,
     skip_rows: Any = None,
     skip_cols: Any = None,
-    stop_cols: Any = None,
-    stop_regex: Any = None,
-    stop_logic: str = "OR",
-    stop_func: Callable[..., bool] | None = None,
-    stop_precheck: bool = True,
+    check_cols: Any = None,
+    check_regex: Any = None,
+    check_logic: str = "OR",
+    check_func: Callable[..., bool] | None = None,
+    precheck: bool = True,
     dtype: Any = None,
     parse_dates: Any = False,
     converters: Any = None,
@@ -531,12 +543,19 @@ def _read_excel_single(
     thousands: str | None = None,
     verbose: bool = False,
 ) -> pd.DataFrame:
+    if columns is not None:
+        if header != 0 and header != columns:
+            raise ValueError("Pass either 'header' or 'columns', not both with different values.")
+        header = columns
+
     if nrows is not None and nrows < 0:
         raise ValueError("nrows cannot be negative.")
-    if stop_func is not None and not callable(stop_func):
-        raise TypeError("stop_func must be callable.")
-    if not isinstance(stop_precheck, bool):
-        raise TypeError("stop_precheck must be a boolean.")
+    if ncols is not None and ncols < 0:
+        raise ValueError("ncols cannot be negative.")
+    if check_func is not None and not callable(check_func):
+        raise TypeError("check_func must be callable.")
+    if not isinstance(precheck, bool):
+        raise TypeError("precheck must be a boolean.")
 
     max_rows, max_cols = _get_sheet_dimensions(
         io,
@@ -545,12 +564,12 @@ def _read_excel_single(
         keep_default_na=keep_default_na,
     )
 
-    header_rows = [] if columns is None else (
-        _parse_rows(columns, max_len=max_rows, open_start=0) or [])
+    header_rows = [] if header is None else (
+        _parse_rows(header, max_len=max_rows, open_start=0) or [])
     header_rows = _dedupe_sorted(header_rows)
     data_start = (max(header_rows) + 1) if header_rows else 0
 
-    selected_rows = _parse_rows(rows, max_len=max_rows, open_start=data_start)
+    selected_rows = _parse_rows(userows, max_len=max_rows, open_start=data_start)
     if selected_rows is None:
         selected_rows = list(range(data_start, max_rows))
 
@@ -563,13 +582,13 @@ def _read_excel_single(
     selected_rows = [row for row in selected_rows if row not in skipped_rows]
 
     sensor_cols: list[int] | None = None
-    if stop_cols is not None:
+    if check_cols is not None:
         sensor_cols = _parse_cols(
-            stop_cols, max_len=max_cols, open_start=0) or []
+            check_cols, max_len=max_cols, open_start=0) or []
         if not sensor_cols:
-            raise ValueError("stop_cols did not select any columns.")
+            raise ValueError("check_cols did not select any columns.")
 
-    if sensor_cols is not None and stop_precheck:
+    if sensor_cols is not None and precheck:
         raw_stop = pd.read_excel(
             io,
             sheet_name=sheet_name,
@@ -581,7 +600,7 @@ def _read_excel_single(
         )
         _maybe_seek_start(io)
 
-        patterns = _normalise_stop_regex(stop_regex, len(sensor_cols))
+        patterns = _normalise_check_regex(check_regex, len(sensor_cols))
         truncated_rows: list[int] = []
 
         for row in selected_rows:
@@ -589,7 +608,7 @@ def _read_excel_single(
                 raw_stop.iat[row, pos] if row < len(raw_stop) else None
                 for pos in range(len(sensor_cols))
             ]
-            if not _validate_stop_row(values, patterns, stop_logic, stop_func):
+            if not _validate_check_row(values, patterns, check_logic, check_func):
                 break
             truncated_rows.append(row)
 
@@ -598,13 +617,16 @@ def _read_excel_single(
     if nrows is not None:
         selected_rows = selected_rows[:nrows]
 
-    base_cols = _parse_cols(cols, max_len=max_cols, open_start=0)
+    index_cols = _parse_cols(index, max_len=max_cols, open_start=0)
+    base_cols = _parse_cols(usecols, max_len=max_cols, open_start=0)
     if base_cols is None:
-        final_cols = list(range(max_cols))
+        if index_cols:
+            final_cols = list(range(max(index_cols) + 1, max_cols))
+        else:
+            final_cols = list(range(max_cols))
     else:
         final_cols = base_cols[:]
 
-    index_cols = _parse_cols(index, max_len=max_cols, open_start=0)
     if index_cols:
         final_cols = _dedupe_sorted([*final_cols, *index_cols])
 
@@ -615,14 +637,23 @@ def _read_excel_single(
 
     if not final_cols:
         raise ValueError(
-            "No columns remain to be read after applying cols/skip_cols/index.")
+            "No columns remain to be read after applying usecols/skip_cols/index.")
+
+    if ncols is not None:
+        index_set = set(index_cols or [])
+        limited_data_cols = [col for col in final_cols if col not in index_set][:ncols]
+        final_cols = _dedupe_sorted([*limited_data_cols, *(index_cols or [])])
+
+    if not final_cols:
+        raise ValueError(
+            "No columns remain to be read after applying usecols/skip_cols/index/ncols.")
 
     read_cols = final_cols
-    if sensor_cols is not None and not stop_precheck:
+    if sensor_cols is not None and not precheck:
         read_cols = _dedupe_sorted([*final_cols, *sensor_cols])
 
     header_arg: int | list[int] | None
-    if columns is None:
+    if header is None:
         header_arg = None
     elif len(header_rows) == 1:
         header_arg = header_rows[0]
@@ -660,14 +691,14 @@ def _read_excel_single(
     else:
         df = df.iloc[0:0]
 
-    if sensor_cols is not None and not stop_precheck:
-        df = _apply_post_read_stop(
+    if sensor_cols is not None and not precheck:
+        df = _apply_post_read_check(
             df,
             source_cols=read_cols,
             sensor_cols=sensor_cols,
-            stop_regex=stop_regex,
-            stop_logic=stop_logic,
-            stop_func=stop_func,
+            check_regex=check_regex,
+            check_logic=check_logic,
+            check_func=check_func,
         )
 
     final_positions = _positions_for_columns(final_cols, read_cols)
@@ -685,18 +716,20 @@ def _read_excel_single(
 def read_excel(
     io: Any,
     sheet_name: str | int = 0,
-    columns: Any = 0,
+    header: Any = 0,
+    columns: Any = None,
     index: Any = None,
-    cols: Any = None,
-    rows: Any = None,
+    usecols: Any = None,
+    userows: Any = None,
     nrows: int | None = None,
+    ncols: int | None = None,
     skip_rows: Any = None,
     skip_cols: Any = None,
-    stop_cols: Any = None,
-    stop_regex: Any = None,
-    stop_logic: str = "OR",
-    stop_func: Callable[..., bool] | None = None,
-    stop_precheck: bool = True,
+    check_cols: Any = None,
+    check_regex: Any = None,
+    check_logic: str = "OR",
+    check_func: Callable[..., bool] | None = None,
+    precheck: bool = True,
     dtype: Any = None,
     parse_dates: Any = False,
     converters: Any = None,
@@ -712,17 +745,19 @@ def read_excel(
 
     Supported conventions:
     - Individual rows: 0-indexed int or 1-indexed numeric str.
-    - Row ranges: tuple, "a:b" (1-indexed), "a-b" (0-indexed).
+    - Row ranges: tuple, "a:b" (1-indexed), "[a:b]" (0-indexed).
     - Individual columns: 0-indexed int or Excel letters.
-    - Column ranges: tuple, "A:D" (letters), "0-3" (0-indexed).
-    - Open ranges: ":b", "a:", "-b", "a-".
+    - Column ranges: tuple, "A:D" (letters), "[a:b]" (0-indexed).
+    - Open ranges: ":b", "a:", "[:b]", "[a:]".
 
     Key rules:
-    - rows=None reads from the row immediately following the last header row.
-    - Open-start rows range starts immediately after the last header row.
+    - userows=None reads from the row immediately following the last header row.
+    - Open-start userows range starts immediately after the last header row.
+    - usecols=None reads all columns, or columns after the last index column when index is set.
     - skip_rows is applied before nrows, thus not counting towards the limit.
-    - skip_cols removes columns even if they were included by cols or index.
-    - stop_cols uses a raw string sensor read when stop_precheck=True.
+    - skip_cols is applied before ncols, thus not counting towards the limit.
+    - skip_cols removes columns even if they were included by usecols or index.
+    - check_cols uses a raw string sensor read when precheck=True.
     """
     if sheet_name is None or isinstance(sheet_name, list):
         raise TypeError(
@@ -731,18 +766,20 @@ def read_excel(
     return _read_excel_single(
         io,
         sheet_name=sheet_name,
+        header=header,
         columns=columns,
         index=index,
-        cols=cols,
-        rows=rows,
+        usecols=usecols,
+        userows=userows,
         nrows=nrows,
+        ncols=ncols,
         skip_rows=skip_rows,
         skip_cols=skip_cols,
-        stop_cols=stop_cols,
-        stop_regex=stop_regex,
-        stop_logic=stop_logic,
-        stop_func=stop_func,
-        stop_precheck=stop_precheck,
+        check_cols=check_cols,
+        check_regex=check_regex,
+        check_logic=check_logic,
+        check_func=check_func,
+        precheck=precheck,
         dtype=dtype,
         parse_dates=parse_dates,
         converters=converters,
@@ -753,3 +790,5 @@ def read_excel(
         thousands=thousands,
         verbose=verbose,
     )
+
+

@@ -456,7 +456,101 @@ def _apply_post_read_check(
     return df.iloc[:keep_count]
 
 
-def _read_final_columns(
+def _read_sensor_columns(
+    io: Any,
+    *,
+    sheet_name: str | int,
+    sensor_cols: list[int],
+    engine: str | None,
+    keep_default_na: bool,
+) -> pd.DataFrame:
+    raw = pd.read_excel(
+        io,
+        sheet_name=sheet_name,
+        header=None,
+        usecols=sensor_cols,
+        dtype=str,
+        engine=engine,
+        keep_default_na=keep_default_na,
+    )
+    _maybe_seek_start(io)
+    return raw
+
+
+def _sensor_values_at(raw: pd.DataFrame, row: int, n_sensor_cols: int) -> list[Any]:
+    return [
+        raw.iat[row, pos] if row < len(raw) else None
+        for pos in range(n_sensor_cols)
+    ]
+
+
+def _first_valid_sensor_row(
+    raw: pd.DataFrame,
+    *,
+    rows: Iterable[int],
+    n_sensor_cols: int,
+    check_regex: Any,
+    check_logic: str,
+    check_func: Callable[..., bool] | None,
+) -> int | None:
+    patterns = _normalise_check_regex(check_regex, n_sensor_cols)
+
+    for row in rows:
+        values = _sensor_values_at(raw, row, n_sensor_cols)
+        if _validate_check_row(values, patterns, check_logic, check_func):
+            return row
+
+    return None
+
+
+def _last_unskipped_row_before(row: int, skipped_rows: set[int]) -> int | None:
+    for candidate in range(row - 1, -1, -1):
+        if candidate not in skipped_rows:
+            return candidate
+    return None
+
+
+def _empty_frame_from_header(
+    io: Any,
+    *,
+    sheet_name: str | int,
+    header_arg: int | list[int],
+    read_cols: list[int],
+    engine: str | None,
+    keep_default_na: bool,
+) -> pd.DataFrame:
+    header_rows = [header_arg] if isinstance(header_arg, int) else header_arg
+    raw = pd.read_excel(
+        io,
+        sheet_name=sheet_name,
+        header=None,
+        nrows=max(header_rows) + 1,
+        dtype=object,
+        engine=engine,
+        keep_default_na=keep_default_na,
+    )
+    _maybe_seek_start(io)
+
+    def label_at(row: int, col: int, level: int | None = None) -> Any:
+        value = raw.iat[row, col] if row < len(raw) and col < raw.shape[1] else None
+        if _is_effectively_null(value):
+            if level is None:
+                return f"Unnamed: {col}"
+            return f"Unnamed: {col}_level_{level}"
+        return value
+
+    if isinstance(header_arg, int):
+        columns = [label_at(header_arg, col) for col in read_cols]
+        return pd.DataFrame(columns=columns)
+
+    levels = [
+        [label_at(row, col, level) for col in read_cols]
+        for level, row in enumerate(header_arg)
+    ]
+    return pd.DataFrame(columns=pd.MultiIndex.from_arrays(levels))
+
+
+def _read_all_then_select_columns(
     io: Any,
     *,
     sheet_name: str | int,
@@ -473,35 +567,12 @@ def _read_final_columns(
     thousands: str | None,
     verbose: bool,
 ) -> pd.DataFrame:
-    is_multi_header = isinstance(header_arg, list) and len(header_arg) > 1
-
-    if is_multi_header:
-        # pandas does not support usecols together with a multi-index header.
-        df = pd.read_excel(
-            io,
-            sheet_name=sheet_name,
-            header=header_arg,
-            index_col=None,
-            usecols=None,
-            nrows=read_nrows,
-            dtype=dtype,
-            parse_dates=parse_dates,
-            converters=converters,
-            na_values=na_values,
-            keep_default_na=keep_default_na,
-            engine=engine,
-            decimal=decimal,
-            thousands=thousands,
-            verbose=verbose,
-        )
-        return df.iloc[:, read_cols]
-
-    return pd.read_excel(
+    df = pd.read_excel(
         io,
         sheet_name=sheet_name,
         header=header_arg,
         index_col=None,
-        usecols=read_cols,
+        usecols=None,
         nrows=read_nrows,
         dtype=dtype,
         parse_dates=parse_dates,
@@ -513,6 +584,109 @@ def _read_final_columns(
         thousands=thousands,
         verbose=verbose,
     )
+    missing_cols = [col for col in read_cols if col >= df.shape[1]]
+    for col in missing_cols:
+        if isinstance(df.columns, pd.MultiIndex):
+            df[(f"Unnamed: {col}", *("" for _ in range(df.columns.nlevels - 1)))] = pd.NA
+        elif header_arg is None:
+            df[col] = pd.NA
+        else:
+            df[f"Unnamed: {col}"] = pd.NA
+
+    return df.iloc[:, read_cols]
+
+
+def _read_final_columns(
+    io: Any,
+    *,
+    sheet_name: str | int,
+    header_arg: int | list[int] | None,
+    read_cols: list[int],
+    read_nrows: int,
+    dtype: Any,
+    parse_dates: Any,
+    converters: Any,
+    na_values: Any,
+    keep_default_na: bool,
+    engine: str | None,
+    decimal: str,
+    thousands: str | None,
+    verbose: bool,
+    preserve_missing_cols: bool,
+) -> pd.DataFrame:
+    is_multi_header = isinstance(header_arg, list) and len(header_arg) > 1
+
+    if read_nrows == 0 and header_arg is None and preserve_missing_cols:
+        return pd.DataFrame(columns=read_cols)
+
+    if read_nrows == 0 and preserve_missing_cols:
+        return _empty_frame_from_header(
+            io,
+            sheet_name=sheet_name,
+            header_arg=header_arg,
+            read_cols=read_cols,
+            engine=engine,
+            keep_default_na=keep_default_na,
+        )
+
+    if is_multi_header:
+        # pandas does not support usecols together with a multi-index header.
+        return _read_all_then_select_columns(
+            io,
+            sheet_name=sheet_name,
+            header_arg=header_arg,
+            read_cols=read_cols,
+            read_nrows=read_nrows,
+            dtype=dtype,
+            parse_dates=parse_dates,
+            converters=converters,
+            na_values=na_values,
+            keep_default_na=keep_default_na,
+            engine=engine,
+            decimal=decimal,
+            thousands=thousands,
+            verbose=verbose,
+        )
+
+    pandas_usecols = read_cols if preserve_missing_cols else None
+    try:
+        return pd.read_excel(
+            io,
+            sheet_name=sheet_name,
+            header=header_arg,
+            index_col=None,
+            usecols=pandas_usecols,
+            nrows=read_nrows,
+            dtype=dtype,
+            parse_dates=parse_dates,
+            converters=converters,
+            na_values=na_values,
+            keep_default_na=keep_default_na,
+            engine=engine,
+            decimal=decimal,
+            thousands=thousands,
+            verbose=verbose,
+        )
+    except pd.errors.ParserError as exc:
+        if "out-of-bounds" not in str(exc) or not preserve_missing_cols:
+            raise
+        _maybe_seek_start(io)
+        return _read_all_then_select_columns(
+            io,
+            sheet_name=sheet_name,
+            header_arg=header_arg,
+            read_cols=read_cols,
+            read_nrows=read_nrows,
+            dtype=dtype,
+            parse_dates=parse_dates,
+            converters=converters,
+            na_values=na_values,
+            keep_default_na=keep_default_na,
+            engine=engine,
+            decimal=decimal,
+            thousands=thousands,
+            verbose=verbose,
+        )
 
 
 def _read_excel_single(
@@ -520,7 +694,7 @@ def _read_excel_single(
     *,
     sheet_name: str | int = 0,
     header: Any = 0,
-    columns: Any = None,
+    autoheader: bool = False,
     index: Any = None,
     usecols: Any = None,
     userows: Any = None,
@@ -543,11 +717,6 @@ def _read_excel_single(
     thousands: str | None = None,
     verbose: bool = False,
 ) -> pd.DataFrame:
-    if columns is not None:
-        if header != 0 and header != columns:
-            raise ValueError("Pass either 'header' or 'columns', not both with different values.")
-        header = columns
-
     if nrows is not None and nrows < 0:
         raise ValueError("nrows cannot be negative.")
     if ncols is not None and ncols < 0:
@@ -556,6 +725,10 @@ def _read_excel_single(
         raise TypeError("check_func must be callable.")
     if not isinstance(precheck, bool):
         raise TypeError("precheck must be a boolean.")
+    if not isinstance(autoheader, bool):
+        raise TypeError("autoheader must be a boolean.")
+    if autoheader and check_cols is None:
+        raise ValueError("autoheader requires check_cols.")
 
     max_rows, max_cols = _get_sheet_dimensions(
         io,
@@ -563,6 +736,42 @@ def _read_excel_single(
         engine=engine,
         keep_default_na=keep_default_na,
     )
+
+    sensor_cols: list[int] | None = None
+    if check_cols is not None:
+        sensor_cols = _parse_cols(
+            check_cols, max_len=max_cols, open_start=0) or []
+        if not sensor_cols:
+            raise ValueError("check_cols did not select any columns.")
+
+    force_empty = False
+    if autoheader:
+        assert sensor_cols is not None
+        auto_skipped_rows = set(_parse_rows(
+            skip_rows, max_len=max_rows, open_start=0) or [])
+        raw_header = _read_sensor_columns(
+            io,
+            sheet_name=sheet_name,
+            sensor_cols=sensor_cols,
+            engine=engine,
+            keep_default_na=False,
+        )
+        candidate_rows = [
+            row for row in range(max_rows) if row not in auto_skipped_rows]
+        first_data_row = _first_valid_sensor_row(
+            raw_header,
+            rows=candidate_rows,
+            n_sensor_cols=len(sensor_cols),
+            check_regex=check_regex,
+            check_logic=check_logic,
+            check_func=check_func,
+        )
+        if first_data_row is None:
+            header = None
+            force_empty = True
+        else:
+            header = _last_unskipped_row_before(
+                first_data_row, auto_skipped_rows)
 
     header_rows = [] if header is None else (
         _parse_rows(header, max_len=max_rows, open_start=0) or [])
@@ -581,33 +790,23 @@ def _read_excel_single(
         skip_rows, max_len=max_rows, open_start=data_start) or [])
     selected_rows = [row for row in selected_rows if row not in skipped_rows]
 
-    sensor_cols: list[int] | None = None
-    if check_cols is not None:
-        sensor_cols = _parse_cols(
-            check_cols, max_len=max_cols, open_start=0) or []
-        if not sensor_cols:
-            raise ValueError("check_cols did not select any columns.")
+    if force_empty:
+        selected_rows = []
 
     if sensor_cols is not None and precheck:
-        raw_stop = pd.read_excel(
+        raw_stop = _read_sensor_columns(
             io,
             sheet_name=sheet_name,
-            header=None,
-            usecols=sensor_cols,
-            dtype=str,
+            sensor_cols=sensor_cols,
             engine=engine,
             keep_default_na=False,
         )
-        _maybe_seek_start(io)
 
         patterns = _normalise_check_regex(check_regex, len(sensor_cols))
         truncated_rows: list[int] = []
 
         for row in selected_rows:
-            values = [
-                raw_stop.iat[row, pos] if row < len(raw_stop) else None
-                for pos in range(len(sensor_cols))
-            ]
+            values = _sensor_values_at(raw_stop, row, len(sensor_cols))
             if not _validate_check_row(values, patterns, check_logic, check_func):
                 break
             truncated_rows.append(row)
@@ -651,6 +850,13 @@ def _read_excel_single(
     read_cols = final_cols
     if sensor_cols is not None and not precheck:
         read_cols = _dedupe_sorted([*final_cols, *sensor_cols])
+    preserve_missing_cols = (
+        base_cols is not None
+        or index_cols is not None
+        or skipped_cols
+        or ncols is not None
+        or (sensor_cols is not None and not precheck)
+    )
 
     header_arg: int | list[int] | None
     if header is None:
@@ -680,7 +886,11 @@ def _read_excel_single(
         decimal=decimal,
         thousands=thousands,
         verbose=verbose,
+        preserve_missing_cols=bool(preserve_missing_cols),
     )
+    if not preserve_missing_cols:
+        read_cols = list(range(df.shape[1]))
+        final_cols = read_cols
 
     if selected_rows:
         selected_set = set(selected_rows)
@@ -717,7 +927,7 @@ def read_excel(
     io: Any,
     sheet_name: str | int = 0,
     header: Any = 0,
-    columns: Any = None,
+    autoheader: bool = False,
     index: Any = None,
     usecols: Any = None,
     userows: Any = None,
@@ -758,6 +968,8 @@ def read_excel(
     - skip_cols is applied before ncols, thus not counting towards the limit.
     - skip_cols removes columns even if they were included by usecols or index.
     - check_cols uses a raw string sensor read when precheck=True.
+    - autoheader=True uses check_cols to place the header on the last
+      non-skipped row before the first valid data row.
     """
     if sheet_name is None or isinstance(sheet_name, list):
         raise TypeError(
@@ -767,7 +979,7 @@ def read_excel(
         io,
         sheet_name=sheet_name,
         header=header,
-        columns=columns,
+        autoheader=autoheader,
         index=index,
         usecols=usecols,
         userows=userows,

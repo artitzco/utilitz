@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import io
+import hashlib
 import os
 import pickle
 import zipfile
@@ -118,6 +119,14 @@ class CryptoInput:
     content: bytes
     kind: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "content_hash",
+            hashlib.sha256(self.content).hexdigest(),
+        )
 
     @property
     def size(self) -> int:
@@ -129,7 +138,7 @@ class CryptoInput:
     def __repr__(self) -> str:
         return (
             f"CryptoInput(kind={self.kind!r}, size={self.size}, "
-            f"metadata={self.metadata!r})"
+            f"content_hash={self.content_hash!r}, metadata={self.metadata!r})"
         )
 
     def __str__(self) -> str:

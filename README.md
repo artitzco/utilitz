@@ -4,7 +4,7 @@
 
 It is built with a modular approach, keeping the core library lightweight while providing powerful specialized modules through optional dependencies.
 
-Current release: **0.9.0**
+Current release: **0.9.1**
 
 ## 🚀 Installation
 

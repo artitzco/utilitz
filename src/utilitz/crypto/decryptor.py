@@ -71,6 +71,35 @@ def _safe_extract_zip(zip_bytes: bytes, destination_dir: str) -> None:
         zf.extractall(destination_dir)
 
 
+def _merge_tree(source_dir: str, destination_dir: str) -> None:
+    source_dir = os.path.abspath(source_dir)
+    destination_dir = os.path.abspath(destination_dir)
+
+    for entry in os.scandir(source_dir):
+        source_path = entry.path
+        destination_path = os.path.join(destination_dir, entry.name)
+
+        if entry.is_dir(follow_symlinks=False):
+            os.makedirs(destination_path, exist_ok=True)
+            _merge_tree(source_path, destination_path)
+            continue
+
+        parent_dir = os.path.dirname(destination_path)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+        shutil.copy2(source_path, destination_path)
+
+
+def _contains_single_root(zip_bytes: bytes) -> str:
+    with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+        root_names = {
+            Path(member.filename).parts[0]
+            for member in zf.infolist()
+            if member.filename and not member.filename.startswith("__MACOSX/")
+        }
+    return next(iter(sorted(root_names)), "decrypted_directory")
+
+
 class Decryptor:
     """
     Minimal state holder for decryption workflows.
@@ -210,18 +239,42 @@ class Decryptor:
         self,
         file_path: str | None = None,
         *,
+        create_parent: bool = False,
         overwrite: bool = False,
     ) -> str:
+        """Restore the decrypted payload as a file.
+
+        If ``file_path`` is a directory, the stored filename is appended.
+        Set ``create_parent=True`` to create missing parent directories.
+        """
         if self.decrypted_content is None:
             raise ValueError("No decrypted content has been generated.")
 
         if file_path is None:
-            filename = self.metadata.get("filename", "decrypted_file.bin")
+            filename = self.metadata.get("filename")
+            if not filename:
+                raise ValueError(
+                    "No filename was stored in the decrypted metadata. "
+                    "Provide file_path explicitly."
+                )
             file_path = filename
 
         path = os.path.abspath(os.path.expanduser(file_path))
+        if os.path.isdir(path):
+            filename = self.metadata.get("filename")
+            if not filename:
+                raise ValueError(
+                    "No filename was stored in the decrypted metadata. "
+                    "Provide file_path explicitly."
+                )
+            path = os.path.join(path, filename)
         parent_dir = os.path.dirname(path)
-        if parent_dir:
+        if parent_dir and not os.path.isdir(parent_dir):
+            if not create_parent:
+                raise FileNotFoundError(
+                    f"Parent directory does not exist: {parent_dir}. "
+                    "Set create_parent=True to create it."
+                )
             os.makedirs(parent_dir, exist_ok=True)
 
         if os.path.exists(path) and not overwrite:
@@ -239,31 +292,44 @@ class Decryptor:
         self,
         output_path: str | None = None,
         *,
+        exact_path: bool = False,
+        create_parent: bool = False,
         overwrite: bool = False,
     ) -> str:
+        """Restore the decrypted payload as a directory.
+
+        By default, ``output_path`` acts as the container for the restored
+        root folder. Set ``exact_path=True`` to treat it as the final folder
+        path, and ``create_parent=True`` to create missing parent directories.
+        """
         if self.decrypted_content is None:
             raise ValueError("No decrypted content has been generated.")
         if self.kind != "directory":
             raise ValueError("The decrypted content is not a directory archive.")
 
         try:
-            with zipfile.ZipFile(io.BytesIO(self.decrypted_content), "r") as zf:
-                root_names = {
-                    Path(member.filename).parts[0]
-                    for member in zf.infolist()
-                    if member.filename and not member.filename.startswith("__MACOSX/")
-                }
-                root_name = next(iter(sorted(root_names)), "decrypted_directory")
+            root_name = _contains_single_root(self.decrypted_content)
         except zipfile.BadZipFile as exc:
             raise ValueError("Invalid directory archive.") from exc
 
         if output_path is None:
             output_path = root_name
 
-        final_dir_path = os.path.abspath(os.path.expanduser(output_path))
-        output_dir = os.path.dirname(final_dir_path)
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
+        if exact_path:
+            final_dir_path = os.path.abspath(os.path.expanduser(output_path))
+        else:
+            final_dir_path = os.path.abspath(
+                os.path.expanduser(os.path.join(output_path, root_name))
+            )
+
+        parent_dir = os.path.dirname(final_dir_path)
+        if parent_dir and not os.path.isdir(parent_dir):
+            if not create_parent:
+                raise FileNotFoundError(
+                    f"Parent directory does not exist: {parent_dir}. "
+                    "Set create_parent=True to create it."
+                )
+            os.makedirs(parent_dir, exist_ok=True)
 
         if os.path.exists(final_dir_path):
             if not overwrite:
@@ -271,7 +337,12 @@ class Decryptor:
                     f"Output directory already exists: {final_dir_path}. "
                     "Set overwrite=True to overwrite it."
                 )
-            shutil.rmtree(final_dir_path)
+            if not os.path.isdir(final_dir_path):
+                raise NotADirectoryError(
+                    f"Output path exists and is not a directory: {final_dir_path}"
+                )
+        else:
+            os.makedirs(final_dir_path, exist_ok=True)
 
         temp_extract_dir = tempfile.mkdtemp(prefix=".tmp_extract_")
         try:
@@ -280,7 +351,7 @@ class Decryptor:
             extracted_root = os.path.join(temp_extract_dir, root_name)
             if not os.path.isdir(extracted_root):
                 raise ValueError("Invalid directory archive structure.")
-            os.replace(extracted_root, final_dir_path)
+            _merge_tree(extracted_root, final_dir_path)
         finally:
             if os.path.isdir(temp_extract_dir):
                 shutil.rmtree(temp_extract_dir, ignore_errors=True)

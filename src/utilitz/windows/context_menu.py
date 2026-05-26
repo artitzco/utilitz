@@ -5,9 +5,8 @@ import json
 import warnings
 import winreg
 from ctypes import wintypes
+from typing import Any
 
-
-# ── WinAPI bindings ───────────────────────────────────────────────────────────
 
 HRESULT = getattr(wintypes, "HRESULT", ctypes.c_long)
 
@@ -18,6 +17,28 @@ _SHLoadIndirectString.restype = HRESULT
 _ExpandEnvironmentStringsW = ctypes.windll.kernel32.ExpandEnvironmentStringsW
 _ExpandEnvironmentStringsW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
 _ExpandEnvironmentStringsW.restype = wintypes.DWORD
+
+
+_SECTION_BASES = {
+    "folder": [r"Directory\shell", r"Folder\shell"],
+    "background": [r"Directory\Background\shell"],
+}
+
+_DEFAULT_USER_BASE = {
+    "folder": r"HKCU\Software\Classes\Directory\shell",
+    "background": r"HKCU\Software\Classes\Directory\Background\shell",
+}
+
+_PROTECTED_ENTRIES = {
+    ("folder", "open"),
+    ("folder", "opennewprocess"),
+    ("folder", "opennewtab"),
+    ("folder", "opennewwindow"),
+    ("folder", "pintohome"),
+}
+
+_ENTRY_FIELDS = ("text", "command", "icon", "extended", "registry_path", "submenu")
+_SEARCH_FIELDS = ("key", "text", "command", "icon", "registry_path")
 
 
 def _expand_env(text: str) -> str:
@@ -38,308 +59,443 @@ def _clean_text(text: str) -> str:
     return text.replace("&&", "\0").replace("&", "").replace("\0", "&").strip()
 
 
-# ── ContextMenu ───────────────────────────────────────────────────────────────
-
-_REGISTRY_BASES: dict[str, list[str]] = {
-    "background": [r"Directory\Background"],
-    "folder": ["Directory", "Folder"],
-}
+def _normalize_path(path: str) -> str:
+    return path.replace("/", "\\")
 
 
-class ContextMenu:
-    """
-    Manager for Windows context menu commands (folders and background).
+def _split_registry_path(registry_path: str) -> tuple[str, Any, str]:
+    path = _normalize_path(registry_path)
+    root, _, subpath = path.partition("\\")
+    roots = {
+        "HKCU": winreg.HKEY_CURRENT_USER,
+        "HKEY_CURRENT_USER": winreg.HKEY_CURRENT_USER,
+        "HKCR": winreg.HKEY_CLASSES_ROOT,
+        "HKEY_CLASSES_ROOT": winreg.HKEY_CLASSES_ROOT,
+        "HKLM": winreg.HKEY_LOCAL_MACHINE,
+        "HKEY_LOCAL_MACHINE": winreg.HKEY_LOCAL_MACHINE,
+    }
+    try:
+        return root.upper(), roots[root.upper()], subpath
+    except KeyError as exc:
+        raise ValueError(f"Unsupported registry root in path: {registry_path!r}") from exc
 
-    Commands are stored as plain dictionaries grouped by context:
-    {"background": [dict, ...], "folder": [dict, ...]}
 
-    Each command dict has the following keys:
-        text, command, icon, extended, registry_path, submenu
+def _target_registry_path(registry_path: str, *, all_users: bool) -> tuple[Any, str]:
+    root_name, root, subpath = _split_registry_path(registry_path)
+    if not all_users and root_name in {"HKCR", "HKEY_CLASSES_ROOT"}:
+        return winreg.HKEY_CURRENT_USER, rf"Software\Classes\{subpath}"
+    return root, subpath
 
-    Initialization:
-        ContextMenu()               — reads current entries from the registry.
-        ContextMenu("path.json")    — loads from a JSON file.
-        ContextMenu(dict)           — reconstructs from a plain dictionary.
 
-    Public API:
-        ContextMenu.from_system()   — reads current entries from the registry.
-        ContextMenu.from_json(path) — loads from a JSON file.
-        ContextMenu.from_dict(data) — reconstructs from a plain dictionary.
+def _path_key(registry_path: str) -> str:
+    return _normalize_path(registry_path).rstrip("\\").rsplit("\\", 1)[-1]
 
-        context_menu.to_system()    — writes the current commands to the registry.
-        context_menu.to_json(path)  — saves the commands to a JSON file.
-        context_menu.to_dict()      — returns the commands dictionary.
 
-    The constructor and save() are kept for backwards compatibility, but they
-    are deprecated. Prefer the from_* and to_* methods for new code.
-    """
+def _delete_recursive(root, path: str) -> None:
+    try:
+        with winreg.OpenKey(root, path, 0, winreg.KEY_ALL_ACCESS) as key:
+            while True:
+                try:
+                    _delete_recursive(key, winreg.EnumKey(key, 0))
+                except OSError:
+                    break
+        winreg.DeleteKey(root, path)
+    except FileNotFoundError:
+        pass
+
+
+class ContextMenuEntry:
+    """Single Windows context menu entry for one context."""
 
     def __init__(
         self,
-        source: dict[str, list[dict]] | str | None = None,
+        data: dict[str, Any],
         *,
-        _warn_deprecated: bool = True,
+        context: str,
+        state: str = "clean",
     ):
-        if _warn_deprecated:
-            warnings.warn(
-                "ContextMenu() initialization is deprecated and will be removed "
-                "in a future version. Use ContextMenu.from_system(), "
-                "ContextMenu.from_dict(), or ContextMenu.from_json() instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+        if context not in _SECTION_BASES:
+            raise ValueError(f"Unsupported context: {context!r}")
 
-        if source is None:
-            self.commands = self._read_system()
-        elif isinstance(source, str):
-            with open(source, "r", encoding="utf-8") as f:
-                self.commands = json.load(f)
-        elif isinstance(source, dict):
-            self.commands: dict[str, list[dict]] = {
-                "background": source.get("background", []),
-                "folder": source.get("folder", []),
-            }
-        else:
-            raise TypeError(f"Expected dict, str (JSON path), or None; got {type(source).__name__}")
+        self._context = context
+        self._state = state
+        self._initializing = True
 
-    def __str__(self) -> str:
-        bg = len(self.commands.get("background", []))
-        fl = len(self.commands.get("folder", []))
-        return f"ContextMenu(background={bg}, folder={fl})"
+        self.text = data.get("text")
+        self.command = data.get("command")
+        self.icon = data.get("icon")
+        self.extended = bool(data.get("extended", False))
+        self.registry_path = data.get("registry_path") or self._default_registry_path(data)
+        self.submenu = list(data.get("submenu", []))
+
+        self._original = self.to_dict()
+        self._initializing = False
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+        if name in _ENTRY_FIELDS and not getattr(self, "_initializing", True):
+            if self._state == "clean":
+                object.__setattr__(self, "_state", "modified")
+
+    @property
+    def context(self) -> str:
+        return self._context
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def key(self) -> str:
+        return _path_key(self.registry_path)
+
+    @property
+    def protected(self) -> bool:
+        return (self.context, self.key.lower()) in _PROTECTED_ENTRIES
+
+    def delete(self, *, force: bool = False) -> None:
+        if self.protected and not force:
+            raise PermissionError(f"Refusing to delete protected context menu entry: {self.context}:{self.key}")
+        self._state = "deleted"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {field: getattr(self, field) for field in _ENTRY_FIELDS}
+
+    def _mark_clean(self) -> None:
+        self._state = "clean"
+        self._original = self.to_dict()
+
+    def _default_registry_path(self, data: dict[str, Any]) -> str:
+        text = str(data.get("text") or "Command")
+        key = "".join(ch for ch in text if ch.isalnum()) or "Command"
+        return rf"{_DEFAULT_USER_BASE[self.context]}\{key}"
 
     def __repr__(self) -> str:
-        return self.__str__()
+        return (
+            f"ContextMenuEntry(context={self.context!r}, key={self.key!r}, "
+            f"text={self.text!r}, state={self.state!r})"
+        )
 
-    # ── Constructors ─────────────────────────────────────────────────────────
+    def __str__(self) -> str:
+        return (
+            "ContextMenuEntry\n"
+            f"  context: {self.context}\n"
+            f"  key: {self.key}\n"
+            f"  text: {self.text}\n"
+            f"  command: {self.command}\n"
+            f"  icon: {self.icon}\n"
+            f"  extended: {self.extended}\n"
+            f"  registry_path: {self.registry_path}\n"
+            f"  state: {self.state}\n"
+            f"  protected: {self.protected}"
+        )
+
+
+class ContextMenuSection:
+    """Collection of context menu entries for one context."""
+
+    def __init__(self, context: str, entries: list[ContextMenuEntry] | None = None):
+        if context not in _SECTION_BASES:
+            raise ValueError(f"Unsupported context: {context!r}")
+        self.context = context
+        self.entries = entries or []
+
+    def add(self, entry: dict[str, Any] | ContextMenuEntry) -> ContextMenuEntry:
+        item = entry if isinstance(entry, ContextMenuEntry) else ContextMenuEntry(entry, context=self.context, state="new")
+        if item.context != self.context:
+            raise ValueError(f"Cannot add {item.context!r} entry to {self.context!r} section")
+        if self.get(item.key) is not None:
+            raise ValueError(f"Context menu entry already exists: {self.context}:{item.key}")
+        self.entries.append(item)
+        return item
+
+    def get(self, key: str) -> ContextMenuEntry | None:
+        wanted = key.lower()
+        for entry in self.entries:
+            if entry.key.lower() == wanted and entry.state != "deleted":
+                return entry
+        return None
+
+    def remove(self, key: str, *, force: bool = False) -> ContextMenuEntry | None:
+        entry = self.get(key)
+        if entry is not None:
+            entry.delete(force=force)
+        return entry
+
+    def find(self, value: str | None = None, **filters: str) -> list[ContextMenuEntry]:
+        results = [entry for entry in self.entries if entry.state != "deleted"]
+        if value is not None:
+            needle = value.lower()
+            results = [
+                entry
+                for entry in results
+                if any(needle in str(getattr(entry, field, "") or "").lower() for field in _SEARCH_FIELDS)
+            ]
+
+        for field, expected in filters.items():
+            needle = str(expected).lower()
+            results = [
+                entry
+                for entry in results
+                if needle in str(getattr(entry, field, "") or "").lower()
+            ]
+
+        return results
+
+    def changed(self, *, force: bool = False) -> list[ContextMenuEntry]:
+        return [
+            entry
+            for entry in self.entries
+            if entry.state != "clean"
+            if force or not entry.protected
+        ]
+
+    def to_list(self) -> list[dict[str, Any]]:
+        return [entry.to_dict() for entry in self.entries if entry.state != "deleted"]
+
+    def __repr__(self) -> str:
+        return (
+            f"ContextMenuSection(context={self.context!r}, entries={len(self.find())}, "
+            f"changed={len(self.changed())})"
+        )
+
+    def __str__(self) -> str:
+        entries = self.find()
+        changed = self.changed()
+        keys = ", ".join(entry.key for entry in entries[:10])
+        if len(entries) > 10:
+            keys += f", ... +{len(entries) - 10} more"
+        return (
+            "ContextMenuSection\n"
+            f"  context: {self.context}\n"
+            f"  entries: {len(entries)}\n"
+            f"  changed: {len(changed)}\n"
+            f"  keys: {keys}"
+        )
+
+
+class ContextMenu:
+    """Safe, incremental manager for Windows folder/background context menus."""
+
+    def __init__(self):
+        self.folder = ContextMenuSection("folder", self._read_section("folder"))
+        self.background = ContextMenuSection("background", self._read_section("background"))
 
     @classmethod
     def from_system(cls) -> ContextMenu:
-        """Creates a context menu manager from the current Windows Registry."""
-        return cls(None, _warn_deprecated=False)
-
-    @classmethod
-    def from_dict(cls, source: dict[str, list[dict]]) -> ContextMenu:
-        """Creates a context menu manager from a plain commands dictionary."""
-        return cls(source, _warn_deprecated=False)
-
-    @classmethod
-    def from_json(cls, path: str) -> ContextMenu:
-        """Creates a context menu manager from a JSON file."""
-        return cls(path, _warn_deprecated=False)
-
-    # ── System reading ────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _read_system() -> dict[str, list[dict]]:
-        """Reads the current context menu commands from the Windows Registry."""
-        hkcr = winreg.HKEY_CLASSES_ROOT
-        commands: dict[str, list[dict]] = {"background": [], "folder": []}
-
-        def read_item(key_path: str) -> dict | None:
-            try:
-                with winreg.OpenKeyEx(hkcr, key_path, 0, winreg.KEY_READ) as h:
-                    for guard in ["LegacyDisable", "ProgrammaticAccessOnly"]:
-                        try:
-                            winreg.QueryValueEx(h, guard)
-                            return None
-                        except OSError:
-                            pass
-
-                    text_raw = None
-                    try:
-                        text_raw = winreg.QueryValueEx(h, "MUIVerb")[0]
-                    except OSError:
-                        try:
-                            text_raw = winreg.QueryValue(h, "")
-                        except OSError:
-                            return None
-
-                    if not text_raw:
-                        return None
-                    text = _clean_text(_resolve_indirect(str(text_raw)))
-
-                    icon_raw = None
-                    try:
-                        icon_raw = winreg.QueryValueEx(h, "Icon")[0]
-                    except OSError:
-                        pass
-
-                    extended = False
-                    try:
-                        winreg.QueryValueEx(h, "Extended")
-                        extended = True
-                    except OSError:
-                        pass
-
-                    cmd = None
-                    try:
-                        with winreg.OpenKeyEx(h, "command", 0, winreg.KEY_READ) as hc:
-                            cmd_raw = winreg.QueryValueEx(hc, "")[0]
-                            cmd = _expand_env(str(cmd_raw))
-                    except OSError:
-                        pass
-
-                    return {
-                        "text": text,
-                        "command": cmd,
-                        "icon": _resolve_indirect(str(icon_raw)) if icon_raw else None,
-                        "registry_path": f"HKCR\\{key_path}",
-                        "extended": extended,
-                        "submenu": [],
-                    }
-            except OSError:
-                return None
-
-        for ctx, bases in _REGISTRY_BASES.items():
-            seen: set[tuple] = set()
-            for base in bases:
-                shell_path = f"{base}\\shell"
-                try:
-                    with winreg.OpenKeyEx(hkcr, shell_path, 0, winreg.KEY_READ) as h_shell:
-                        i = 0
-                        while True:
-                            try:
-                                verb = winreg.EnumKey(h_shell, i)
-                                item = read_item(f"{shell_path}\\{verb}")
-                                if item:
-                                    uid = (item["text"], item["command"])
-                                    if uid not in seen:
-                                        seen.add(uid)
-                                        commands[ctx].append(item)
-                                i += 1
-                            except OSError:
-                                break
-                except OSError:
-                    pass
-
-        return commands
-
-    # ── Serialization ─────────────────────────────────────────────────────────
-
-    def to_dict(self) -> dict:
-        """Returns the commands dictionary."""
-        return self.commands
-
-    def to_json(self, path: str):
-        """Saves the commands to a JSON file (UTF-8, 4 spaces) with sorted keys."""
-        order = ["text", "command", "icon", "extended", "registry_path", "submenu"]
-        
-        # Re-organizar los diccionarios para asegurar el orden estético de las llaves
-        formatted_commands = {}
-        for ctx, items in self.commands.items():
-            formatted_commands[ctx] = []
-            for item in items:
-                # Solo incluimos las llaves que existen y en el orden definido
-                new_item = {k: item[k] for k in order if k in item}
-                # Añadir llaves extra que no estén en nuestra lista de orden (por si acaso)
-                for k in item:
-                    if k not in new_item:
-                        new_item[k] = item[k]
-                formatted_commands[ctx].append(new_item)
-
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(formatted_commands, f, indent=4, ensure_ascii=False)
-
-    # ── Registry persistence ──────────────────────────────────────────────────
-
-    def to_system(self, user_only: bool = True):
-        """
-        Writes the current commands to the Windows Registry.
-
-        Note: Windows displays context menu items alphabetically based on the registry
-        key name.
-
-        This is a full overwrite: commands previously registered in the system
-        that are no longer present in this manager will be removed.
-
-        If 'user_only' is True (default), writes to HKEY_CURRENT_USER\\Software\\Classes,
-        which does not require Administrator privileges.
-        """
-        root_key = winreg.HKEY_CURRENT_USER if user_only else winreg.HKEY_CLASSES_ROOT
-
-        def _to_subpath(registry_path: str) -> str:
-            parts = registry_path.split("\\", 1)
-            subpath = parts[1] if len(parts) > 1 else registry_path
-            if user_only:
-                return f"Software\\Classes\\{subpath}"
-            return subpath
-
-        def _delete_recursive(root, path: str):
-            try:
-                with winreg.OpenKey(root, path, 0, winreg.KEY_ALL_ACCESS) as key:
-                    while True:
-                        try:
-                            _delete_recursive(key, winreg.EnumKey(key, 0))
-                        except OSError:
-                            break
-                winreg.DeleteKey(root, path)
-            except FileNotFoundError:
-                pass
-
-        def _write_command(cmd: dict, ctx: str):
-            reg_path = cmd.get("registry_path")
-            if not reg_path:
-                base = r"Directory\Background" if ctx == "background" else "Directory"
-                reg_path = rf"HKCR\{base}\shell\{cmd['text'].replace(' ', '')}"
-                cmd["registry_path"] = reg_path
-
-            subpath = _to_subpath(reg_path)
-
-            with winreg.CreateKeyEx(root_key, subpath, 0, winreg.KEY_ALL_ACCESS) as h:
-                winreg.SetValueEx(h, "MUIVerb", 0, winreg.REG_SZ, cmd["text"])
-                winreg.SetValue(root_key, subpath, winreg.REG_SZ, cmd["text"])
-
-                if cmd.get("icon"):
-                    winreg.SetValueEx(h, "Icon", 0, winreg.REG_SZ, cmd["icon"])
-
-                if cmd.get("extended"):
-                    winreg.SetValueEx(h, "Extended", 0, winreg.REG_SZ, "")
-                else:
-                    try:
-                        winreg.DeleteValue(h, "Extended")
-                    except OSError:
-                        pass
-
-                if cmd.get("command"):
-                    with winreg.CreateKeyEx(h, "command", 0, winreg.KEY_ALL_ACCESS) as hc:
-                        winreg.SetValueEx(hc, "", 0, winreg.REG_SZ, cmd["command"])
-
-        # Step 1: Wipe existing shell keys for each context.
-        for ctx, bases in _REGISTRY_BASES.items():
-            for base in bases:
-                shell_path = f"{base}\\shell"
-                actual_shell = f"Software\\Classes\\{shell_path}" if user_only else shell_path
-
-                try:
-                    with winreg.OpenKeyEx(root_key, actual_shell, 0, winreg.KEY_READ) as h_shell:
-                        verbs_to_delete = []
-                        i = 0
-                        while True:
-                            try:
-                                verbs_to_delete.append(winreg.EnumKey(h_shell, i))
-                                i += 1
-                            except OSError:
-                                break
-                    for verb in verbs_to_delete:
-                        _delete_recursive(root_key, f"{actual_shell}\\{verb}")
-                except OSError:
-                    pass
-
-        # Step 2: Write commands back to the registry.
-        for ctx, cmds in self.commands.items():
-            for cmd in cmds:
-                _write_command(cmd, ctx)
-
-    def save(self, user_only: bool = True):
-        """
-        Deprecated alias for to_system().
-
-        Use to_system() instead.
-        """
         warnings.warn(
-            "ContextMenu.save() is deprecated and will be removed in a future "
-            "version. Use ContextMenu.to_system() instead.",
+            "ContextMenu.from_system() is deprecated. Use ContextMenu() instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        return self.to_system(user_only=user_only)
+        return cls()
+
+    @classmethod
+    def from_json(cls, path: str) -> ContextMenu:
+        raise RuntimeError(
+            "ContextMenu.from_json() was removed. Use ContextMenu() to read the system, "
+            "then use add/get/remove/find and to_system()."
+        )
+
+    @classmethod
+    def from_dict(cls, source: dict[str, list[dict]]) -> ContextMenu:
+        raise RuntimeError(
+            "ContextMenu.from_dict() was removed. Use ContextMenu() to read the system, "
+            "then use add/get/remove/find and to_system()."
+        )
+
+    def get(self, key: str) -> tuple[ContextMenuEntry | None, ContextMenuEntry | None]:
+        return self.folder.get(key), self.background.get(key)
+
+    def find(self, value: str | None = None, **filters: str) -> list[ContextMenuEntry]:
+        return self.folder.find(value, **filters) + self.background.find(value, **filters)
+
+    def changed(self, *, force: bool = False) -> list[ContextMenuEntry]:
+        return self.folder.changed(force=force) + self.background.changed(force=force)
+
+    def to_dict(self) -> dict[str, list[dict[str, Any]]]:
+        return {
+            "folder": self.folder.to_list(),
+            "background": self.background.to_list(),
+        }
+
+    def to_json(self, path: str) -> None:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, indent=4, ensure_ascii=False)
+
+    def to_system(
+        self,
+        *,
+        force: bool = False,
+        verbose: bool = True,
+        all_users: bool = False,
+    ) -> list[dict[str, str]] | None:
+        applied = []
+        for entry in self.changed(force=force):
+            action = entry.state
+            if entry.state == "deleted":
+                self._delete_entry(entry, all_users=all_users)
+            elif entry.state in {"new", "modified"}:
+                self._write_entry(entry, all_users=all_users)
+            applied.append({"action": action, "context": entry.context, "key": entry.key})
+            entry._mark_clean()
+        if verbose:
+            self._print_summary(applied)
+            return None
+        return applied
+
+    @staticmethod
+    def _read_section(context: str) -> list[ContextMenuEntry]:
+        entries: list[ContextMenuEntry] = []
+        seen: set[tuple[str, str]] = set()
+
+        for shell_path in _SECTION_BASES[context]:
+            try:
+                with winreg.OpenKeyEx(winreg.HKEY_CLASSES_ROOT, shell_path, 0, winreg.KEY_READ) as h_shell:
+                    index = 0
+                    while True:
+                        try:
+                            key = winreg.EnumKey(h_shell, index)
+                            registry_path = rf"HKCR\{shell_path}\{key}"
+                            entry = ContextMenu._read_entry(context, registry_path)
+                            identity = (entry.context, entry.registry_path.lower()) if entry else None
+                            if entry is not None and identity not in seen:
+                                seen.add(identity)
+                                entries.append(entry)
+                            index += 1
+                        except OSError:
+                            break
+            except OSError:
+                pass
+
+        return entries
+
+    @staticmethod
+    def _read_entry(context: str, registry_path: str) -> ContextMenuEntry | None:
+        _, root, subpath = _split_registry_path(registry_path)
+        try:
+            with winreg.OpenKeyEx(root, subpath, 0, winreg.KEY_READ) as h:
+                for guard in ("LegacyDisable", "ProgrammaticAccessOnly"):
+                    try:
+                        winreg.QueryValueEx(h, guard)
+                        return None
+                    except OSError:
+                        pass
+
+                text = ContextMenu._read_text(h)
+                if not text:
+                    return None
+
+                icon = None
+                try:
+                    icon = _resolve_indirect(str(winreg.QueryValueEx(h, "Icon")[0]))
+                except OSError:
+                    pass
+
+                extended = False
+                try:
+                    winreg.QueryValueEx(h, "Extended")
+                    extended = True
+                except OSError:
+                    pass
+
+                command = None
+                try:
+                    with winreg.OpenKeyEx(h, "command", 0, winreg.KEY_READ) as hc:
+                        command = _expand_env(str(winreg.QueryValueEx(hc, "")[0]))
+                except OSError:
+                    pass
+
+                return ContextMenuEntry(
+                    {
+                        "text": text,
+                        "command": command,
+                        "icon": icon,
+                        "extended": extended,
+                        "registry_path": registry_path,
+                        "submenu": [],
+                    },
+                    context=context,
+                )
+        except OSError:
+            return None
+
+    @staticmethod
+    def _read_text(key) -> str | None:
+        try:
+            raw = winreg.QueryValueEx(key, "MUIVerb")[0]
+        except OSError:
+            try:
+                raw = winreg.QueryValue(key, "")
+            except OSError:
+                return None
+        return _clean_text(_resolve_indirect(str(raw))) if raw else None
+
+    @staticmethod
+    def _write_entry(entry: ContextMenuEntry, *, all_users: bool = False) -> None:
+        root, subpath = _target_registry_path(entry.registry_path, all_users=all_users)
+        with winreg.CreateKeyEx(root, subpath, 0, winreg.KEY_ALL_ACCESS) as h:
+            winreg.SetValueEx(h, "MUIVerb", 0, winreg.REG_SZ, entry.text or entry.key)
+            winreg.SetValue(root, subpath, winreg.REG_SZ, entry.text or entry.key)
+
+            if entry.icon:
+                winreg.SetValueEx(h, "Icon", 0, winreg.REG_SZ, entry.icon)
+            else:
+                try:
+                    winreg.DeleteValue(h, "Icon")
+                except OSError:
+                    pass
+
+            if entry.extended:
+                winreg.SetValueEx(h, "Extended", 0, winreg.REG_SZ, "")
+            else:
+                try:
+                    winreg.DeleteValue(h, "Extended")
+                except OSError:
+                    pass
+
+            if entry.command:
+                with winreg.CreateKeyEx(h, "command", 0, winreg.KEY_ALL_ACCESS) as hc:
+                    winreg.SetValueEx(hc, "", 0, winreg.REG_SZ, entry.command)
+
+    @staticmethod
+    def _delete_entry(entry: ContextMenuEntry, *, all_users: bool = False) -> None:
+        root, subpath = _target_registry_path(entry.registry_path, all_users=all_users)
+        _delete_recursive(root, subpath)
+
+    @staticmethod
+    def _print_summary(applied: list[dict[str, str]]) -> None:
+        if not applied:
+            print("ContextMenu: no changes to apply.")
+            return
+
+        counts = {"new": 0, "modified": 0, "deleted": 0}
+        for item in applied:
+            counts[item["action"]] = counts.get(item["action"], 0) + 1
+
+        parts = [
+            f"{counts[action]} {action}"
+            for action in ("new", "modified", "deleted")
+            if counts.get(action)
+        ]
+        total_label = "change" if len(applied) == 1 else "changes"
+        print(f"ContextMenu: applied {len(applied)} {total_label}: {', '.join(parts)}.")
+
+    def __repr__(self) -> str:
+        return (
+            f"ContextMenu(folder={len(self.folder.find())}, background={len(self.background.find())}, "
+            f"changed={len(self.changed())})"
+        )
+
+    def __str__(self) -> str:
+        changed = self.changed()
+        changed_keys = ", ".join(f"{entry.context}:{entry.key}" for entry in changed[:10])
+        if len(changed) > 10:
+            changed_keys += f", ... +{len(changed) - 10} more"
+        return (
+            "ContextMenu\n"
+            f"  folder entries: {len(self.folder.find())}\n"
+            f"  background entries: {len(self.background.find())}\n"
+            f"  changed: {len(changed)}\n"
+            f"  changed keys: {changed_keys}"
+        )

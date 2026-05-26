@@ -1,6 +1,7 @@
 from .decryptor import Decryptor
 from .encryptor import Encryptor
 from .input import CryptoInput
+from ._utils import KEY_VARNAME
 from .output import CryptoOutput
 
 __all__ = [
@@ -8,4 +9,5 @@ __all__ = [
     "Decryptor",
     "CryptoInput",
     "CryptoOutput",
+    "KEY_VARNAME",
 ]

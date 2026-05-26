@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "utilitz"
-version = "0.9.1"
+version = "0.9.2"
 authors = [
   { name = "Artitzco", email = "artitzco@proton.me" },
 ]
@@ -29,7 +29,8 @@ gui = [
     "pynput"
 ]
 crypto = [
-    "cryptography"
+    "cryptography",
+    "pyperclip"
 ]
 all = [
     "pandas",
@@ -37,7 +38,8 @@ all = [
     "openpyxl",
     "pyautogui",
     "pynput",
-    "cryptography"
+    "cryptography",
+    "pyperclip"
 ]
 
 [project.urls]

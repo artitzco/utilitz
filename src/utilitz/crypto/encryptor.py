@@ -7,6 +7,13 @@ from typing import Any
 
 from .decryptor import Decryptor
 from .input import CryptoInput
+from ._utils import (
+    CRYPT_MAGIC,
+    DOCUMENT_MAGIC,
+    KEY_VARNAME,
+    resolve_password,
+    validate_key_env_varname,
+)
 from .output import CryptoOutput
 
 try:
@@ -17,9 +24,6 @@ try:
     HAS_CRYPTO = True
 except ImportError:
     HAS_CRYPTO = False
-
-
-DOCUMENT_MAGIC = b"ITZ-DOC-V1"
 
 
 def _check_crypto() -> None:
@@ -65,6 +69,7 @@ class Encryptor:
     def __init__(self, input: CryptoInput | None = None) -> None:
         self.input = input
         self.output: CryptoOutput | None = None
+        self.key_env_varname = KEY_VARNAME
 
     @property
     def has_input(self) -> bool:
@@ -82,6 +87,10 @@ class Encryptor:
 
     def clear_input(self) -> "Encryptor":
         self.input = None
+        return self
+
+    def set_key_varname(self, name: str) -> "Encryptor":
+        self.key_env_varname = validate_key_env_varname(name)
         return self
 
     @classmethod
@@ -130,7 +139,7 @@ class Encryptor:
 
     def encrypt(
         self,
-        password: str,
+        password: str | None = None,
         *,
         salt_size: int = 16,
         iterations: int = 100_000,
@@ -139,8 +148,7 @@ class Encryptor:
     ) -> "Encryptor":
         if self.input is None:
             raise ValueError("No crypto input has been set.")
-        if not isinstance(password, str) or not password:
-            raise ValueError("password must be a non-empty string.")
+        password = resolve_password(password, self.key_env_varname)
         _check_crypto()
         if not isinstance(salt_size, int) or salt_size <= 0:
             raise ValueError("salt_size must be a positive integer.")
@@ -183,7 +191,7 @@ class Encryptor:
             ).encode("utf-8")
 
             encrypted_content = (
-                b"ITZ-CRYPT-V1"
+                CRYPT_MAGIC
                 + b":"
                 + base64.urlsafe_b64encode(config)
                 + b":"
@@ -205,6 +213,14 @@ class Encryptor:
         if self.output is None:
             raise ValueError("No encrypted output has been generated.")
         return self.output.to_string(encoding=encoding)
+
+    def to_clipboard(self, encoding: str = "utf-8") -> str:
+        """
+        Copy the encrypted output to the system clipboard as text.
+        """
+        if self.output is None:
+            raise ValueError("No encrypted output has been generated.")
+        return self.output.to_clipboard(encoding=encoding)
 
     def to_file(
         self,

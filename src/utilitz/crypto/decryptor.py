@@ -11,6 +11,15 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from . import _utils
+from ._utils import (
+    CRYPT_MAGIC,
+    DOCUMENT_MAGIC,
+    KEY_VARNAME,
+    resolve_password,
+    validate_key_env_varname,
+)
+
 try:
     from cryptography.fernet import Fernet
     from cryptography.hazmat.primitives import hashes
@@ -27,9 +36,6 @@ def _check_crypto() -> None:
             "The 'cryptography' library is required for crypto utilities. "
             "Install it with: pip install utilitz[crypto]"
         )
-
-
-DOCUMENT_MAGIC = b"ITZ-DOC-V1"
 
 
 def _unpack_document_payload(payload: bytes) -> tuple[dict[str, Any], bytes]:
@@ -113,6 +119,7 @@ class Decryptor:
         self.decrypted_content: bytes | None = None
         self.kind: str | None = None
         self.metadata: dict[str, Any] = {}
+        self.key_env_varname = KEY_VARNAME
 
     @property
     def has_content(self) -> bool:
@@ -148,6 +155,10 @@ class Decryptor:
         self.metadata = {}
         return self
 
+    def set_key_varname(self, name: str) -> "Decryptor":
+        self.key_env_varname = validate_key_env_varname(name)
+        return self
+
     @classmethod
     def from_bytes(cls, content: bytes) -> "Decryptor":
         if not isinstance(content, (bytes, bytearray, memoryview)):
@@ -173,12 +184,11 @@ class Decryptor:
 
     def decrypt(
         self,
-        password: str,
+        password: str | None = None,
     ) -> "Decryptor":
         if self.content is None:
             raise ValueError("No encrypted content has been set.")
-        if not isinstance(password, str) or not password:
-            raise ValueError("password must be a non-empty string.")
+        password = resolve_password(password, self.key_env_varname)
         _check_crypto()
 
         password_bytes = password.encode("utf-8")
@@ -190,7 +200,7 @@ class Decryptor:
         key = None
         try:
             parts = self.content.split(b":", 3)
-            if len(parts) != 4 or parts[0] != b"ITZ-CRYPT-V1":
+            if len(parts) != 4 or parts[0] != CRYPT_MAGIC:
                 raise ValueError("Invalid encrypted output format.")
 
             try:
@@ -214,7 +224,9 @@ class Decryptor:
             )
             key = base64.urlsafe_b64encode(kdf.derive(password_bytes))
             decrypted_payload = Fernet(key).decrypt(ciphertext)
-            document_header, document_content = _unpack_document_payload(decrypted_payload)
+            document_header, document_content = _unpack_document_payload(
+                decrypted_payload
+            )
             self.kind = document_header.get("kind")
             metadata = document_header.get("metadata", {})
             self.metadata = metadata if isinstance(metadata, dict) else {}
@@ -234,6 +246,12 @@ class Decryptor:
         if encoding is None:
             encoding = self.metadata.get("encoding", "utf-8")
         return self.decrypted_content.decode(encoding)
+
+    def to_clipboard(self, encoding: str | None = None) -> str:
+        """
+        Copy the decrypted content to the system clipboard as text.
+        """
+        return _utils.copy_text_to_clipboard(self.to_string(encoding=encoding))
 
     def to_file(
         self,

@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 import hashlib
 import os
 
+from . import _utils
+
 
 @dataclass(frozen=True)
 class CryptoOutput:
@@ -40,6 +42,12 @@ class CryptoOutput:
 
     def to_string(self, encoding: str = "utf-8") -> str:
         return self.content.decode(encoding)
+
+    def to_clipboard(self, encoding: str = "utf-8") -> str:
+        """
+        Copy the encrypted artifact to the system clipboard as text.
+        """
+        return _utils.copy_text_to_clipboard(self.to_string(encoding=encoding))
 
     def to_file(
         self,

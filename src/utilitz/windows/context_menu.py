@@ -37,8 +37,17 @@ _PROTECTED_ENTRIES = {
     ("folder", "pintohome"),
 }
 
-_ENTRY_FIELDS = ("text", "command", "icon", "extended", "registry_path", "submenu")
+_ENTRY_FIELDS = (
+    "text",
+    "command",
+    "icon",
+    "extended",
+    "registry_path",
+    "submenu",
+)
 _SEARCH_FIELDS = ("key", "text", "command", "icon", "registry_path")
+_KNOWN_VALUE_NAMES = {"MUIVerb", "Icon", "Extended"}
+_INTERNAL_DATA_FIELDS = set(_ENTRY_FIELDS) | {"registry_values"}
 
 
 def _expand_env(text: str) -> str:
@@ -104,6 +113,83 @@ def _delete_recursive(root, path: str) -> None:
         pass
 
 
+class ContextMenuCommand:
+    """Command subkey for a context menu entry."""
+
+    def __init__(
+        self,
+        value: str | dict[str, Any] | None = None,
+        *,
+        extra_values: dict[str, Any] | None = None,
+        on_change=None,
+    ):
+        self._on_change = on_change
+        self._extra_value_types = {}
+        self._initializing = True
+
+        if isinstance(value, dict):
+            self.value = value.get("value")
+            raw_extras = {key: val for key, val in value.items() if key != "value"}
+        else:
+            self.value = value
+            raw_extras = extra_values or {}
+
+        for name, item in raw_extras.items():
+            if isinstance(item, dict) and "value" in item and "type" in item:
+                self._extra_value_types[name] = item["type"]
+                setattr(self, name, item["value"])
+            else:
+                self._extra_value_types[name] = winreg.REG_SZ
+                setattr(self, name, item)
+
+        self._initializing = False
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+        if not name.startswith("_") and not getattr(self, "_initializing", True):
+            on_change = getattr(self, "_on_change", None)
+            if on_change is not None:
+                on_change()
+
+    def __getitem__(self, name: str) -> Any:
+        if name == "value":
+            return self.value
+        if name in self._extra_value_types:
+            return getattr(self, name)
+        raise KeyError(name)
+
+    def __setitem__(self, name: str, value: Any) -> None:
+        if name == "value":
+            self.value = value
+            return
+        if name not in self._extra_value_types:
+            self._extra_value_types[name] = winreg.REG_SZ
+        setattr(self, name, value)
+
+    def __contains__(self, name: str) -> bool:
+        return name == "value" or name in self._extra_value_types
+
+    def to_dict(self) -> dict[str, Any]:
+        data = {"value": self.value}
+        for name in self._extra_value_types:
+            data[name] = getattr(self, name)
+        return data
+
+    def _registry_extra_values(self) -> dict[str, dict[str, Any]]:
+        return {
+            name: {"value": getattr(self, name), "type": registry_type}
+            for name, registry_type in self._extra_value_types.items()
+        }
+
+    def __repr__(self) -> str:
+        return f"ContextMenuCommand(value={self.value!r}, extras={len(self._extra_value_types)})"
+
+    def __str__(self) -> str:
+        lines = ["ContextMenuCommand", f"  value: {self.value}"]
+        lines.extend(f"  {name}: {getattr(self, name)}" for name in self._extra_value_types)
+        return "\n".join(lines)
+
+
 class ContextMenuEntry:
     """Single Windows context menu entry for one context."""
 
@@ -122,20 +208,52 @@ class ContextMenuEntry:
         self._initializing = True
 
         self.text = data.get("text")
-        self.command = data.get("command")
+        command = data.get("command")
+        if isinstance(command, ContextMenuCommand):
+            command._on_change = self._mark_modified
+            self.command = command
+        else:
+            self.command = ContextMenuCommand(
+                command,
+                on_change=self._mark_modified,
+            )
         self.icon = data.get("icon")
         self.extended = bool(data.get("extended", False))
         self.registry_path = data.get("registry_path") or self._default_registry_path(data)
         self.submenu = list(data.get("submenu", []))
+        self._extra_value_types = {}
+
+        for name, value in self._entry_extra_values(data).items():
+            self._extra_value_types[name] = value.get("type", winreg.REG_SZ)
+            setattr(self, name, value.get("value"))
 
         self._original = self.to_dict()
         self._initializing = False
 
     def __setattr__(self, name: str, value: Any) -> None:
+        if name == "command" and not isinstance(value, ContextMenuCommand):
+            value = ContextMenuCommand(value, on_change=self._mark_modified)
         object.__setattr__(self, name, value)
-        if name in _ENTRY_FIELDS and not getattr(self, "_initializing", True):
+        if not name.startswith("_") and not getattr(self, "_initializing", True):
             if self._state == "clean":
                 object.__setattr__(self, "_state", "modified")
+
+    def __getitem__(self, name: str) -> Any:
+        if name in self.to_dict():
+            return self.to_dict()[name]
+        raise KeyError(name)
+
+    def __setitem__(self, name: str, value: Any) -> None:
+        if name in _INTERNAL_DATA_FIELDS:
+            setattr(self, name, value)
+            return
+
+        if name not in self._extra_value_types:
+            self._extra_value_types[name] = winreg.REG_SZ
+        setattr(self, name, value)
+
+    def __contains__(self, name: str) -> bool:
+        return name in self.to_dict()
 
     @property
     def context(self) -> str:
@@ -159,7 +277,15 @@ class ContextMenuEntry:
         self._state = "deleted"
 
     def to_dict(self) -> dict[str, Any]:
-        return {field: getattr(self, field) for field in _ENTRY_FIELDS}
+        data = {field: getattr(self, field) for field in _ENTRY_FIELDS if field != "command"}
+        data["command"] = self.command.to_dict()
+        for name in self._extra_value_types:
+            data[name] = getattr(self, name)
+        return data
+
+    def _mark_modified(self) -> None:
+        if not getattr(self, "_initializing", True) and self._state == "clean":
+            self._state = "modified"
 
     def _mark_clean(self) -> None:
         self._state = "clean"
@@ -170,6 +296,28 @@ class ContextMenuEntry:
         key = "".join(ch for ch in text if ch.isalnum()) or "Command"
         return rf"{_DEFAULT_USER_BASE[self.context]}\{key}"
 
+    @staticmethod
+    def _entry_extra_values(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        values = dict(data.get("registry_values", {}))
+        for name, value in data.items():
+            if name not in _INTERNAL_DATA_FIELDS:
+                if isinstance(value, dict) and "value" in value and "type" in value:
+                    values[name] = value
+                else:
+                    values[name] = {"value": value, "type": winreg.REG_SZ}
+        return values
+
+    def _entry_extra_registry_values(self) -> dict[str, dict[str, Any]]:
+        return {
+            name: {"value": getattr(self, name), "type": registry_type}
+            for name, registry_type in self._extra_value_types.items()
+        }
+
+    def _search_text(self, field: str) -> str:
+        if field == "command":
+            return str(self.command.value or "").lower()
+        return str(getattr(self, field, "") or "").lower()
+
     def __repr__(self) -> str:
         return (
             f"ContextMenuEntry(context={self.context!r}, key={self.key!r}, "
@@ -177,18 +325,28 @@ class ContextMenuEntry:
         )
 
     def __str__(self) -> str:
-        return (
-            "ContextMenuEntry\n"
-            f"  context: {self.context}\n"
-            f"  key: {self.key}\n"
-            f"  text: {self.text}\n"
-            f"  command: {self.command}\n"
-            f"  icon: {self.icon}\n"
-            f"  extended: {self.extended}\n"
-            f"  registry_path: {self.registry_path}\n"
-            f"  state: {self.state}\n"
-            f"  protected: {self.protected}"
+        lines = [
+            "ContextMenuEntry",
+            f"  context: {self.context}",
+            f"  key: {self.key}",
+            f"  text: {self.text}",
+            f"  command: {self.command.value}",
+            f"  icon: {self.icon}",
+            f"  extended: {self.extended}",
+            f"  registry_path: {self.registry_path}",
+        ]
+        lines.extend(f"  {name}: {getattr(self, name)}" for name in self._extra_value_types)
+        lines.extend(
+            f"  command.{name}: {getattr(self.command, name)}"
+            for name in self.command._extra_value_types
         )
+        lines.extend(
+            [
+                f"  state: {self.state}",
+                f"  protected: {self.protected}",
+            ]
+        )
+        return "\n".join(lines)
 
 
 class ContextMenuSection:
@@ -200,8 +358,35 @@ class ContextMenuSection:
         self.context = context
         self.entries = entries or []
 
-    def add(self, entry: dict[str, Any] | ContextMenuEntry) -> ContextMenuEntry:
-        item = entry if isinstance(entry, ContextMenuEntry) else ContextMenuEntry(entry, context=self.context, state="new")
+    def add(
+        self,
+        text: str | ContextMenuEntry,
+        command: str | ContextMenuCommand | None = None,
+        *,
+        icon: str | None = None,
+        extended: bool = False,
+        registry_path: str | None = None,
+        submenu: list[dict[str, Any]] | None = None,
+        registry_values: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> ContextMenuEntry:
+        if isinstance(text, ContextMenuEntry):
+            item = text
+        else:
+            item = ContextMenuEntry(
+                {
+                    "text": text,
+                    "command": command,
+                    "icon": icon,
+                    "extended": extended,
+                    "registry_path": registry_path,
+                    "submenu": submenu or [],
+                    "registry_values": registry_values or {},
+                    **kwargs,
+                },
+                context=self.context,
+                state="new",
+            )
         if item.context != self.context:
             raise ValueError(f"Cannot add {item.context!r} entry to {self.context!r} section")
         if self.get(item.key) is not None:
@@ -229,7 +414,7 @@ class ContextMenuSection:
             results = [
                 entry
                 for entry in results
-                if any(needle in str(getattr(entry, field, "") or "").lower() for field in _SEARCH_FIELDS)
+                if any(needle in entry._search_text(field) for field in _SEARCH_FIELDS)
             ]
 
         for field, expected in filters.items():
@@ -237,7 +422,7 @@ class ContextMenuSection:
             results = [
                 entry
                 for entry in results
-                if needle in str(getattr(entry, field, "") or "").lower()
+                if needle in entry._search_text(field)
             ]
 
         return results
@@ -400,9 +585,12 @@ class ContextMenu:
                     pass
 
                 command = None
+                registry_values = ContextMenu._read_extra_values(h, known_names=_KNOWN_VALUE_NAMES)
                 try:
                     with winreg.OpenKeyEx(h, "command", 0, winreg.KEY_READ) as hc:
-                        command = _expand_env(str(winreg.QueryValueEx(hc, "")[0]))
+                        command_values = {"value": _expand_env(str(winreg.QueryValueEx(hc, "")[0]))}
+                        command_values.update(ContextMenu._read_extra_values(hc, known_names=set()))
+                        command = command_values
                 except OSError:
                     pass
 
@@ -414,6 +602,7 @@ class ContextMenu:
                         "extended": extended,
                         "registry_path": registry_path,
                         "submenu": [],
+                        "registry_values": registry_values,
                     },
                     context=context,
                 )
@@ -430,6 +619,29 @@ class ContextMenu:
             except OSError:
                 return None
         return _clean_text(_resolve_indirect(str(raw))) if raw else None
+
+    @staticmethod
+    def _read_extra_values(key, *, known_names: set[str]) -> dict[str, dict[str, Any]]:
+        values = {}
+        index = 0
+        while True:
+            try:
+                name, value, registry_type = winreg.EnumValue(key, index)
+                index += 1
+            except OSError:
+                break
+            if name == "" or name in known_names:
+                continue
+            values[name] = {"value": value, "type": registry_type}
+        return values
+
+    @staticmethod
+    def _write_extra_values(key, values: dict[str, Any]) -> None:
+        for name, data in values.items():
+            if isinstance(data, dict) and "value" in data and "type" in data:
+                winreg.SetValueEx(key, name, 0, data["type"], data["value"])
+            else:
+                winreg.SetValueEx(key, name, 0, winreg.REG_SZ, str(data))
 
     @staticmethod
     def _write_entry(entry: ContextMenuEntry, *, all_users: bool = False) -> None:
@@ -454,9 +666,12 @@ class ContextMenu:
                 except OSError:
                     pass
 
-            if entry.command:
+            if entry.command.value:
                 with winreg.CreateKeyEx(h, "command", 0, winreg.KEY_ALL_ACCESS) as hc:
-                    winreg.SetValueEx(hc, "", 0, winreg.REG_SZ, entry.command)
+                    winreg.SetValueEx(hc, "", 0, winreg.REG_SZ, entry.command.value)
+                    ContextMenu._write_extra_values(hc, entry.command._registry_extra_values())
+
+            ContextMenu._write_extra_values(h, entry._entry_extra_registry_values())
 
     @staticmethod
     def _delete_entry(entry: ContextMenuEntry, *, all_users: bool = False) -> None:

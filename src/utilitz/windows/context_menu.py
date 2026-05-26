@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import warnings
 import winreg
 from ctypes import wintypes
 
@@ -59,9 +60,35 @@ class ContextMenu:
         ContextMenu()               — reads current entries from the registry.
         ContextMenu("path.json")    — loads from a JSON file.
         ContextMenu(dict)           — reconstructs from a plain dictionary.
+
+    Public API:
+        ContextMenu.from_system()   — reads current entries from the registry.
+        ContextMenu.from_json(path) — loads from a JSON file.
+        ContextMenu.from_dict(data) — reconstructs from a plain dictionary.
+
+        context_menu.to_system()    — writes the current commands to the registry.
+        context_menu.to_json(path)  — saves the commands to a JSON file.
+        context_menu.to_dict()      — returns the commands dictionary.
+
+    The constructor and save() are kept for backwards compatibility, but they
+    are deprecated. Prefer the from_* and to_* methods for new code.
     """
 
-    def __init__(self, source: dict[str, list[dict]] | str | None = None):
+    def __init__(
+        self,
+        source: dict[str, list[dict]] | str | None = None,
+        *,
+        _warn_deprecated: bool = True,
+    ):
+        if _warn_deprecated:
+            warnings.warn(
+                "ContextMenu() initialization is deprecated and will be removed "
+                "in a future version. Use ContextMenu.from_system(), "
+                "ContextMenu.from_dict(), or ContextMenu.from_json() instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         if source is None:
             self.commands = self._read_system()
         elif isinstance(source, str):
@@ -82,6 +109,23 @@ class ContextMenu:
 
     def __repr__(self) -> str:
         return self.__str__()
+
+    # ── Constructors ─────────────────────────────────────────────────────────
+
+    @classmethod
+    def from_system(cls) -> ContextMenu:
+        """Creates a context menu manager from the current Windows Registry."""
+        return cls(None, _warn_deprecated=False)
+
+    @classmethod
+    def from_dict(cls, source: dict[str, list[dict]]) -> ContextMenu:
+        """Creates a context menu manager from a plain commands dictionary."""
+        return cls(source, _warn_deprecated=False)
+
+    @classmethod
+    def from_json(cls, path: str) -> ContextMenu:
+        """Creates a context menu manager from a JSON file."""
+        return cls(path, _warn_deprecated=False)
 
     # ── System reading ────────────────────────────────────────────────────────
 
@@ -198,7 +242,7 @@ class ContextMenu:
 
     # ── Registry persistence ──────────────────────────────────────────────────
 
-    def save(self, user_only: bool = True):
+    def to_system(self, user_only: bool = True):
         """
         Writes the current commands to the Windows Registry.
 
@@ -285,3 +329,17 @@ class ContextMenu:
         for ctx, cmds in self.commands.items():
             for cmd in cmds:
                 _write_command(cmd, ctx)
+
+    def save(self, user_only: bool = True):
+        """
+        Deprecated alias for to_system().
+
+        Use to_system() instead.
+        """
+        warnings.warn(
+            "ContextMenu.save() is deprecated and will be removed in a future "
+            "version. Use ContextMenu.to_system() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.to_system(user_only=user_only)

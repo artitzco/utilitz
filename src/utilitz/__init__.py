@@ -4,6 +4,7 @@ from . import sys
 from . import io
 from . import crypto
 from . import regex
+from . import windows
 
 import pickle
 import json

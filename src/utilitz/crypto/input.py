@@ -136,13 +136,17 @@ class CryptoInput:
         return self.content
 
     def __repr__(self) -> str:
-        return (
-            f"CryptoInput(kind={self.kind!r}, size={self.size}, "
-            f"content_hash={self.content_hash!r}, metadata={self.metadata!r})"
-        )
+        return f"CryptoInput(kind={self.kind!r}, size={self.size}, hash={self.content_hash[:12]!r})"
 
     def __str__(self) -> str:
-        return f"CryptoInput<{self.kind}, {self.size} bytes>"
+        metadata_keys = ", ".join(sorted(self.metadata)) or "none"
+        return (
+            "CryptoInput\n"
+            f"  kind: {self.kind}\n"
+            f"  size: {self.size} bytes\n"
+            f"  hash: {self.content_hash[:12]}\n"
+            f"  metadata keys: {metadata_keys}"
+        )
 
     @classmethod
     def from_string(

@@ -248,9 +248,13 @@ class Encryptor:
         return f"Encryptor(has_input={self.has_input}, has_output={self.has_output})"
 
     def __str__(self) -> str:
-        state = "idle"
-        if self.input is not None:
-            state = "ready"
-        if self.output is not None:
-            state = f"{state}, encrypted"
-        return f"Encryptor<{state}>"
+        input_part = "none" if self.input is None else f"{self.input.kind}, {self.input.size} bytes"
+        output_part = "none" if self.output is None else f"{self.output.size} bytes"
+        return (
+            "Encryptor\n"
+            f"  has_input: {self.has_input}\n"
+            f"  input: {input_part}\n"
+            f"  has_output: {self.has_output}\n"
+            f"  output: {output_part}\n"
+            f"  key_env_varname: {self.key_env_varname}"
+        )

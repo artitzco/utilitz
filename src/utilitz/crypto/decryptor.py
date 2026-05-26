@@ -385,22 +385,26 @@ class Decryptor:
         return pickle.loads(self.decrypted_content)
 
     def __str__(self) -> str:
-        state = "idle" if self.content is None else "ready"
-        if self.decrypted_content is not None:
-            state = f"{state}, decrypted"
-        return f"Decryptor<{state}>"
-
-    def __repr__(self) -> str:
-        if self.content is None and self.decrypted_content is None:
-            return "Decryptor(content=None, decrypted_content=None)"
-        content_part = "None" if self.content is None else f"{len(self.content)} bytes"
+        content_part = "none" if self.content is None else f"{len(self.content)} bytes"
         decrypted_part = (
-            "None"
+            "none"
             if self.decrypted_content is None
             else f"{len(self.decrypted_content)} bytes"
         )
+        metadata_keys = ", ".join(sorted(self.metadata)) or "none"
         return (
-            f"Decryptor(content={content_part}, "
-            f"decrypted_content={decrypted_part}, "
-            f"kind={self.kind!r})"
+            "Decryptor\n"
+            f"  has_content: {self.has_content}\n"
+            f"  content: {content_part}\n"
+            f"  has_decrypted_content: {self.has_decrypted_content}\n"
+            f"  decrypted_content: {decrypted_part}\n"
+            f"  kind: {self.kind}\n"
+            f"  metadata keys: {metadata_keys}\n"
+            f"  key_env_varname: {self.key_env_varname}"
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"Decryptor(has_content={self.has_content}, "
+            f"has_decrypted_content={self.has_decrypted_content}, kind={self.kind!r})"
         )

@@ -54,6 +54,21 @@ class MonitorActivity:
         self._keyboard_listener.stop()
         self._mouse_listener.stop()
 
+    @property
+    def inactive_seconds(self):
+        return time.monotonic() - self.last_activity_time
+
+    def __repr__(self):
+        return f"MonitorActivity(inactive_seconds={self.inactive_seconds:.3f})"
+
+    def __str__(self):
+        return (
+            "MonitorActivity\n"
+            f"  inactive_seconds: {self.inactive_seconds:.3f}\n"
+            f"  keyboard_listener: {type(self._keyboard_listener).__name__}\n"
+            f"  mouse_listener: {type(self._mouse_listener).__name__}"
+        )
+
 
 def monitor_keep_alive(seconds, key='ctrl', verbose=1, tolerance=0.1):
     _check_gui()

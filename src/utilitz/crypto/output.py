@@ -78,13 +78,12 @@ class CryptoOutput:
         return path
 
     def __repr__(self) -> str:
-        return (
-            f"CryptoOutput(size={self.size}, "
-            f"created_at={self.created_at.isoformat()!r}, "
-            f"content_hash={self.content_hash!r})"
-        )
+        return f"CryptoOutput(size={self.size}, hash={self.content_hash[:12]!r})"
 
     def __str__(self) -> str:
         return (
-            f"CryptoOutput<{self.size} bytes, hash={self.content_hash[:12]}>"
+            "CryptoOutput\n"
+            f"  size: {self.size} bytes\n"
+            f"  created_at: {self.created_at.isoformat()}\n"
+            f"  hash: {self.content_hash[:12]}"
         )
